@@ -2,10 +2,10 @@
     "version": "0.1.0",
     "configurations": [
       {
-        "name": "Python Debugger: Current File",
+        "name": "Train Debug",
         "type": "debugpy",
         "request": "launch",
-        "program": "${file}",
+        "program": "${workspaceFolder}/main.py",
         "console": "integratedTerminal",
         "cwd": "${workspaceFolder}",
         "env": {
