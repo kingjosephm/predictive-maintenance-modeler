@@ -43,7 +43,7 @@ def main(cfg: DictConfig) -> None:
     )
 
     # 5. Preprocess data
-    df, y_lower_bound, y_upper_bound = dp.preprocess(df)
+    df = dp.preprocess(df)
 
     # 6. Split data
     data = dp.split_transform(df)  # Tuple(X_train, X_test, y_train, y_test)

@@ -46,7 +46,7 @@ class DataProcessor:
         self.lag_length = min(lag_length, 5) # maximum 5 lags, since higher number increases chance of overfitting
 
 
-    def preprocess(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, np.ndarray, np.ndarray]:
+    def preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Initial preprocessing of data including:
             1) change target to bool
@@ -54,7 +54,7 @@ class DataProcessor:
             3) addition of lagged features for each `self.unit_identifier`
             4) creation of final outcome features for xgboost interval censoring
         :param df: pd.DataFrame, input dataframe
-        :return: Tuple of [pd.DataFrame, np.ndarray, np.ndarray]
+        :return: pd.DataFrame
         """
         current = time()
         logging.info("Preprocessing data..")
@@ -70,6 +70,9 @@ class DataProcessor:
             self.sampling_n = 1
             self.lag_length = 0  # no lags for cross-sectional data
 
+        # Sort data by unit and time, in case it's not already
+        df = df.sort_values([self.unit_identifier, self.time_identifier]).reset_index(drop=True)
+
         # Downsample panel
         if self.sampling_n > 1:
             logging.info(f"Downsampling panel to min({self.sampling_n}, len(x)) observations per '{self.unit_identifier}'..")
@@ -84,22 +87,13 @@ class DataProcessor:
         cats = [i for i in df.columns if self.categorical_features_prefix in i]
         df[cats] = df[cats].astype('category')
 
-        # Create label bounds for xgboost interval censoring
-        if self.sampling_n == 0:  # simple cross-sectional data
-            y_lower_bound = df[self.time_identifier].copy()
-            y_upper_bound = np.where(df[self.target_feature] == 1, df[self.time_identifier], +np.inf)
-        else:  # panel data
-            y_lower_bound = np.array(df.groupby(self.unit_identifier)[self.time_identifier].shift(1).fillna(0))
-            y_upper_bound = np.where(df[self.target_feature] == 1, df[self.time_identifier], +np.inf)
-        df = df.drop(columns=[self.time_identifier, self.target_feature])  # drop target feature since it's already in `y_lower_bound` and `y_upper_bound`
-
         # Add feature lags [optional]
         if self.lag_length > 0:
             df = self.feature_lags(df)
 
         logging.info(f"Data preprocessing complete, took: {round(time() - current, 2)} seconds. \n")
 
-        return (df.reset_index(), y_lower_bound, y_upper_bound)
+        return df.reset_index()
 
 
     def split_transform(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, np.ndarray, np.ndarray]:
@@ -115,7 +109,7 @@ class DataProcessor:
 
         # Stratified train-test-val-split
         X_train, X_test, y_train, y_test = self.stratified_train_test_val_split(df)  # removes self.unit_identifier from index
-        
+
         # Oversample training set [optional]
         if self.oversample:
             logging.info("Oversampling training set..")
@@ -193,7 +187,7 @@ class DataProcessor:
         invariant_cols = uniques.columns[(uniques == 1).all()].tolist()
         invariant_cols.remove(self.unit_identifier)
 
-        cols = [i for i in df.columns if i not in [self.unit_identifier, self.target_feature]+invariant_cols]
+        cols = [i for i in df.columns if i not in [self.time_identifier, self.target_feature]+invariant_cols]
         for col in cols:
             concat_list = []
             for i in reversed(range(1, min(min_group_obs+1, self.lag_length+1))):
@@ -207,7 +201,7 @@ class DataProcessor:
             wide_format = pd.concat([wide_format, wide_col], axis=1)  # concat with other columns
 
         # Concat back invariant cols
-        wide_format = pd.concat([wide_format, df[invariant_cols]], axis=1)
+        wide_format = pd.concat([df[[self.time_identifier, self.target_feature]], wide_format, df[invariant_cols]], axis=1)
 
         return wide_format
 
