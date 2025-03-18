@@ -5,6 +5,7 @@ data_path: ./data/imputed_scania.csv.gz
 unit_identifier: vehicle_id
 time_identifier: time_step
 target_feature: in_study_repair
+categorical_features_prefix: Spec_
 test_size: 0.15
 seed: 42
 lag_length: 0
