@@ -8,7 +8,6 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
-from ImbalancedLearningRegression import smote
 import xgboost
 
 from utils import set_seeds, is_bool_or_binary
@@ -110,61 +109,14 @@ class DataProcessor:
         # Stratified train-test-val-split
         X_train, X_test, y_train, y_test = self.stratified_train_test_val_split(df)  # removes self.unit_identifier from index
 
-        # Oversample training set [optional]
-        if self.oversample:
-            logging.info("Oversampling training set..")
-            X_train, y_train = self.resample(X_train, y_train)
-
         # Normalization (note - only strictly required for SVM)
         scaler = MinMaxScaler(clip=True)
         X_train = pd.DataFrame(scaler.fit_transform(X_train), index=X_train.index, columns=X_train.columns)
         X_test = pd.DataFrame(scaler.transform(X_test), index=X_test.index, columns=X_test.columns)
-                 
+
         logging.info(f"Splitting and transforming data complete, took: {round(time() - current, 2)} seconds. \n")
 
         return (X_train, X_test, y_train, y_test)
-    
-    def resample(self, X_train: pd.DataFrame, y_train: np.ndarray) -> Tuple[pd.DataFrame, np.ndarray]:
-        """Resamples the training dataset using SMOTE to handle imbalanced time variable (regression). Note - SMOTE is disabled when lagged features are enabled or if sampling_n > 1
-        
-        Args:
-            X_train (pd.DataFrame): The training features dataframe.
-            y_train (np.ndarray): The training target array.
-            Tuple[pd.DataFrame, np.ndarray]: A tuple containing the resampled training features dataframe and the resampled training target array.
-        """
-        if self.lag_length > 0 or self.sampling_n > 1:
-            logging.warning("Warning! SMOTE implementation not designed for lagged features or 'sampling_n' > 1. Skipping resampling..")
-            return X_train, y_train
-        
-        # Preprocess
-        df = pd.concat([X_train, pd.DataFrame(y_train)], axis=1)
-        df[self.target_feature] = df[self.target_feature].astype(int)  # convert back to int for SMOTE     
-
-        # Oversample training set
-        R = 0.9  # threshold for relative imbalance
-        resampled = smote(
-            data=df.copy(),
-            y=self.time_identifier,
-            k=5,
-            samp_method='balance',
-            drop_na_col=False,
-            drop_na_row=False,
-            rel_thres = R,
-            rel_method = 'auto',
-            rel_xtrm_type = 'high',
-            rel_coef = R
-        )
-        
-        # Correct categorical features back to binary since SMOTE doesn't handle them well
-        for col in [i for i in df.columns if "Cat" in i]:  # note - "Cat" is dataset specific, remove if not applicable
-            resampled[col] = np.where(resampled[col] > 0.5, 1, 0)
-        
-        # Postprocess
-        resampled[self.target_feature] = np.where(resampled[self.target_feature] == 1, True, False)  # convert back to bool for scikit-survival
-        y_train_ = resampled[[self.target_feature, self.time_identifier]].set_index(self.target_feature).to_records()
-        X_train_ = resampled[[i for i in resampled.columns if i not in [self.target_feature, self.time_identifier]]]
-        
-        return X_train_, y_train_
 
 
     def feature_lags(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -273,58 +225,3 @@ class DataProcessor:
         X_test, y_test = self.Xy_split(test)
 
         return (X_train, X_test, y_train, y_test)
-    
-    
-    def partition_data(self, df: pd.DataFrame, num_clients: int = 10, max_units_per_client: Optional[int] = None) -> Tuple[pd.DataFrame, Dict]:
-        """Creates stratified partitioning of `df` to send unique `self.unit_identifier`s to each client for federated
-        learning training. Creates a dict of partition_ids, where each partition_id key corresponds to a list of 
-        `self.unit_identifier`s for that partition.
-        
-        The number of `self.unit_identifier` units assigned to each client is either based on the value of 
-        `max_units_per_client` or the quotient of dividing the dataset by `num_clients`.
-        
-        Note - units not selected for inclusion into the client sample are dropped at the end of this function. 
-        Dropping will happen if `max_units_per_client` * `num_clients` < total unique `self.unit_identifier` 
-        identifiers in df.
-
-        Args:
-            df (pd.DataFrame): Preprocessed data. Assumes `df` already was preprocessed via `self.preprocess()`
-            num_clients (int, optional): Number of federated learning clients to partion data. Defaults to 10.
-            max_units_per_client (Optional[int], optional): Max. number of `self.unit_identifier` IDs to provide to 
-            each client. Defaults to None.
-
-        Returns:
-            Tuple of:
-                pd.DataFrame - same as `df`, except that the rows are possibly fewer
-                dict - partition_id as key, val as list of `self_unit_identifier`s
-        """
-        assert self.time_identifier+'_l0' in df.columns, "Error! Function intended to be run after df is transformed using `self.preprocess()` method!"
-        
-        # Collect unique unit IDs
-        uniq_ids = df[[self.unit_identifier, self.target_feature]].drop_duplicates().reset_index(drop=True)
-        
-        # Nmber of units per client
-        ids_per_client = (len(uniq_ids) // num_clients) - 1
-        
-        if max_units_per_client is not None:
-            ids_per_client = min(max_units_per_client, ids_per_client)
-            
-        partition_mapping = {}
-        ids_selected = []  # all IDs
-        for client in range(num_clients):
-            
-            # Generate current sample
-            sample_ids, _, _, _ = train_test_split(uniq_ids[[self.unit_identifier]], uniq_ids[self.target_feature], train_size=ids_per_client,
-                                                random_state=self.seed, stratify=uniq_ids[self.target_feature])  # stratified sample by target feature
-            sample_ids = sample_ids[self.unit_identifier].tolist()  # convert to list
-            
-            partition_mapping[str(client)] = sample_ids
-            ids_selected += sample_ids
-            
-            # Remove current sample from remainder
-            uniq_ids = uniq_ids[~uniq_ids[self.unit_identifier].isin(sample_ids)]
-        
-        # Drop all other units and their rows if not selected
-        df = df[df[self.unit_identifier].isin(ids_selected)].reset_index(drop=True)  # TODO - centralized holdout set?
-        
-        return (df, partition_mapping)
