@@ -43,10 +43,7 @@ def main(cfg: DictConfig) -> None:
     )
 
     # 5. Preprocess data
-    df = dp.preprocess(df)
-
-    # 6. Split data
-    data = dp.split_transform(df)  # Tuple(X_train, X_test, y_train, y_test)
+    train, test, val = dp.preprocess(df)
 
     # 7. Instantiate appropriate model class
     # TODO

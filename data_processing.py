@@ -1,4 +1,4 @@
-from typing import Tuple, Optional, Dict
+from typing import Tuple
 import logging
 from time import time
 import warnings
@@ -8,7 +8,6 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
-import xgboost
 
 from utils import set_seeds, is_bool_or_binary
 set_seeds(42)
@@ -80,7 +79,7 @@ class DataProcessor:
             logging.info(f"Keeping only last observation per '{self.unit_identifier}'. This will not affect purely cross-sectional data.")
             df = df[df[self.time_identifier] == df.groupby(self.unit_identifier)[self.time_identifier].transform('max')]
 
-        df = df.set_index(self.unit_identifier)
+        df = df.set_index(self.unit_identifier)  # "hide" unit identifier for now
 
         # Set categorical features
         cats = [i for i in df.columns if self.categorical_features_prefix in i]
@@ -88,35 +87,26 @@ class DataProcessor:
 
         # Add feature lags [optional]
         if self.lag_length > 0:
+            logging.info(f"Adding lags up to {self.lag_length} periods..")
             df = self.feature_lags(df)
+
+        df = df.reset_index()  # bring back unit identifier
+
+        # Stratified group split for train, test, and validation sets
+        train, test = self.stratified_group_split(df, self.test_size)
+        train, val = self.stratified_group_split(train, 0.2)
+
+        # Normalization of numeric features, not necessary but can help with convergence
+        scaler = MinMaxScaler(clip=True)
+        reserved_cols = [self.unit_identifier, self.time_identifier, self.target_feature] + cats
+        cols = [i for i in df.columns if i not in reserved_cols]
+        train[cols] = scaler.fit_transform(train[cols])
+        test[cols] = scaler.transform(test[cols])
+        val[cols] = scaler.transform(val[cols])
 
         logging.info(f"Data preprocessing complete, took: {round(time() - current, 2)} seconds. \n")
 
         return df.reset_index()
-
-
-    def split_transform(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, np.ndarray, np.ndarray]:
-        """
-        Second data preprocessing step including:
-            1) Stratified train-test-split
-            2) Standardizing X matrix
-        :param df: pd.DataFrame
-        :return: Tuple of [pd.DataFrame, pd.DataFrame, np.ndarray, np.ndarray]
-        """
-        current = time()
-        logging.info("Splitting & transforming data..")
-
-        # Stratified train-test-val-split
-        X_train, X_test, y_train, y_test = self.stratified_train_test_val_split(df)  # removes self.unit_identifier from index
-
-        # Normalization (note - only strictly required for SVM)
-        scaler = MinMaxScaler(clip=True)
-        X_train = pd.DataFrame(scaler.fit_transform(X_train), index=X_train.index, columns=X_train.columns)
-        X_test = pd.DataFrame(scaler.transform(X_test), index=X_test.index, columns=X_test.columns)
-
-        logging.info(f"Splitting and transforming data complete, took: {round(time() - current, 2)} seconds. \n")
-
-        return (X_train, X_test, y_train, y_test)
 
 
     def feature_lags(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -178,50 +168,32 @@ class DataProcessor:
 
         return df.groupby([self.unit_identifier, quantile]).apply(lambda x: x.sample(1, random_state=self.seed)).reset_index(drop=True)
 
-
-    def Xy_split(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, np.ndarray]:
+    def stratified_group_split(self, df: pd.DataFrame, test_size: float) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
-        Splits `df` into X matrix and y vectors
-        :param df: pd.DataFrame, preprocessed train or test set
-        :return: Tuple of (pd.DataFrame, np.ndarray)
-        """
-        y_cols = [self.target_feature, self.time_identifier]
-        x_cols = [i for i in df.columns if i not in y_cols+[self.unit_identifier]]  # remove `self.unit_identifier` since not needed
-        
-        X = df.loc[:, x_cols]
-        y = df.loc[:, y_cols]
-        y = y.set_index(self.target_feature).to_records()  # converts to structured array, which is required for sklearn-survival
-        return X, y
+        Creates a stratified, grouped cross-valiation on `self.unit_identifier`. Input `df` must be preprocessed and
+        either a panel or cross-sectional dataset. For panel data, the last observation per `self.unit_identifier` is used
+        for stratification on the target feature. Train and test sets are then merged back up with the panel dataset. For
+        cross-sectional data, the target feature is stratified on the entire dataset.
 
-
-    def stratified_train_test_val_split(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, np.ndarray, np.ndarray]:
-        """
-        Creates a stratified, grouped train-test-val split on `self.unit_identifier`. Necessary to prevent data leakage 
-        across splits. Train and val splits are lumped together in train/X_train objects.
-        
         :param df: pd.DataFrame
-        :return: Tuple of 
-            pd.DataFrame - X_train
-            pd.DataFrame - X_test
-            np.ndarray - y_train
-            np.ndarray - y_test
+        :param test_size: float, proportion of test (or validation) set
+        :return: Tuple of
+            pd.DataFrame - train set, including X and y columns
+            pd.DataFrame - test set, including X and y columns
         """
 
         # Target feature invariant across `self.unit_identifier` due to `self.preprocess()`, doesn't matter which one we select
         undup = df[[self.unit_identifier, self.target_feature]].drop_duplicates()
 
         # Create train-test split
-        x_train, x_test, _, _ = train_test_split(undup[[self.unit_identifier]], undup[self.target_feature], test_size=self.test_size,
-                                                random_state=self.seed, stratify=undup[self.target_feature])
-        
+        x_train, x_test, _, _ = train_test_split(undup[[self.unit_identifier]], undup[self.target_feature],
+                                                 test_size=test_size, random_state=self.seed,
+                                                 stratify=undup[self.target_feature])
+
         # Create train and test sets, also shuffle
         test = df[df[self.unit_identifier].isin(x_test[self.unit_identifier].tolist())].copy()\
             .sample(frac=1.0, random_state=self.seed).reset_index(drop=True)
         train = df[df[self.unit_identifier].isin(x_train[self.unit_identifier].tolist())].copy()\
             .sample(frac=1.0, random_state=self.seed).reset_index(drop=True)  # includes val observations
 
-        # Split into X and y
-        X_train, y_train = self.Xy_split(train)
-        X_test, y_test = self.Xy_split(test)
-
-        return (X_train, X_test, y_train, y_test)
+        return train, test
