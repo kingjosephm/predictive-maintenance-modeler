@@ -6,13 +6,14 @@ warnings
 
 import pandas as pd
 import numpy as np
+import scipy.stats as stats
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
 
 from utils import set_seeds, is_bool_or_binary
 set_seeds(42)
 
-warnings.filterwarnings("ignore", category=DeprecationWarning)  #
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 pd.set_option('display.max_rows', 500)
@@ -24,42 +25,61 @@ class DataProcessor:
                  unit_identifier: str,
                  time_identifier: str,
                  target_feature: str,
-                 categorical_features_prefix: str,
                  test_size: float = 0.1,
                  seed: int = 42,
                  lag_length: int = 2,
-                 sampling_n: int = 5,
-                 oversample: bool = False
+                 sampling_n: int = 5
                  ):
 
         self.unit_identifier = unit_identifier
         self.time_identifier = time_identifier
         self.target_feature = target_feature
-        self.categorical_features_prefix = categorical_features_prefix
         self.test_size = test_size
         self.seed = seed
         self.sampling_n = max(1, sampling_n)  # minimum 1, negative values not possible
-        self.oversample = oversample
         assert lag_length < sampling_n, "Error! `lag_length` must be less than `sampling_n`!"
         self.lag_length = min(lag_length, 5) # maximum 5 lags, since higher number increases chance of overfitting
 
 
-    def preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
+    def preprocess(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Initial preprocessing of data including:
-            1) change target to bool
-            2) Downsample the panel to reduce total observations and the influence of outliers. Done with stratified random sampling technique, where `self.time_identifier` used to stratify observations per `self.unit_identifier`
-            3) addition of lagged features for each `self.unit_identifier`
-            4) creation of final outcome features for xgboost interval censoring
+            1) dropping degenerate features if present
+            2) dropping highly correlated features if present
+            3) setting categorical features
+            4) downsampling panel data
+            5) adding feature lags
+            6) stratified group split for train, test, and validation sets
+            7) normalizing numeric features
+
         :param df: pd.DataFrame, input dataframe
-        :return: pd.DataFrame
+        :return: Tuple of
+            pd.DataFrame - train set
+            pd.DataFrame - test set
+            pd.DataFrame - validation set
         """
         current = time()
         logging.info("Preprocessing data..")
 
-        # Recode label to bool -> whether event observed or censored. Needed for classical survival analysis
         # Note: `self.target_feature`=True should mean the outcome is observed, =False is censored
         assert df[self.target_feature].apply(is_bool_or_binary).all(), "Error! `self.target_feature` must be boolean or binary (0, 1)!"
+        df[self.target_feature] = df[self.target_feature].astype(int)
+
+        # Drop any degenerate (invariant) features
+        degenerate_features = [i for i in df.columns if df[i].nunique() == 1]
+        if degenerate_features:
+            logging.info(f"Dropping degenerate features: {degenerate_features}")
+            df = df.drop(columns=degenerate_features)
+
+        # Set categorical features
+        reserved_cols = [self.unit_identifier, self.time_identifier, self.target_feature]
+        categorical_cols = [i for i in df.select_dtypes(include=['object', 'category']).columns if i not in reserved_cols]  # Select categorical columns
+        df[categorical_cols] = df[categorical_cols].astype('category')
+
+        # Drop highly correlated features
+        df = self.drop_highly_correlated_numeric_features(df)
+        df = self.drop_highly_correlated_categorical_features(df)
+        df = self.drop_highly_correlated_categorical_on_numeric_features(df)
 
         # Verify `self.df` is in fact a panel dataset
         max_group_obs = df.groupby(self.unit_identifier)[self.time_identifier].count().max()
@@ -81,10 +101,6 @@ class DataProcessor:
 
         df = df.set_index(self.unit_identifier)  # "hide" unit identifier for now
 
-        # Set categorical features
-        cats = [i for i in df.columns if self.categorical_features_prefix in i]
-        df[cats] = df[cats].astype('category')
-
         # Add feature lags [optional]
         if self.lag_length > 0:
             logging.info(f"Adding lags up to {self.lag_length} periods..")
@@ -98,7 +114,7 @@ class DataProcessor:
 
         # Normalization of numeric features, not necessary but can help with convergence
         scaler = MinMaxScaler(clip=True)
-        reserved_cols = [self.unit_identifier, self.time_identifier, self.target_feature] + cats
+        reserved_cols = [self.unit_identifier, self.time_identifier, self.target_feature] + categorical_cols
         cols = [i for i in df.columns if i not in reserved_cols]
         train[cols] = scaler.fit_transform(train[cols])
         test[cols] = scaler.transform(test[cols])
@@ -106,7 +122,194 @@ class DataProcessor:
 
         logging.info(f"Data preprocessing complete, took: {round(time() - current, 2)} seconds. \n")
 
-        return df.reset_index()
+        return train, test, val
+
+    def drop_highly_correlated_numeric_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Drops highly correlated numeric features from `df` based on Pearson's correlation coefficient using a
+        threshold of 0.999 to define "highly correlated". Drops n-1 features from each correlated group, where n is
+        the number of correlated features.
+
+        Args:
+            df (pd.DataFrame): input dataframe, possibly with highly correlated features
+
+        Returns:
+            pd.DataFrame: modified dataframe with highly correlated features dropped
+        """
+
+        # Identify and drop highly correlated numeric features (Pearson's r > 0.999)
+        threshold = 0.999
+        reserved_cols = [self.unit_identifier, self.time_identifier, self.target_feature]
+        numeric_cols = [i for i in df.select_dtypes(include=[int, float, bool]).columns.tolist() if i not in reserved_cols]
+        corr_matrix = df[numeric_cols].corr().abs()
+        upper_triangle = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(np.bool))
+
+        # Iterate over columns and find correlated feature groups to drop. Keeps 1 feature per group, dropping others
+        to_drop = set()
+        for col in upper_triangle.columns:
+            correlated_features = upper_triangle.index[upper_triangle[col] > threshold].tolist()
+            if correlated_features:  # If there are correlated features
+                correlated_features.append(col)  # Include the current column
+                correlated_features = list(set(correlated_features) - to_drop)  # Remove already dropped features
+                if len(correlated_features) > 1:
+                    to_drop.update(correlated_features[1:])  # Keep 1 feature, drop others
+        if to_drop:
+            logging.info(f"Dropping highly correlated numeric features: {to_drop}")
+            df = df.drop(columns=to_drop)
+
+        return df
+
+    def drop_highly_correlated_categorical_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Drops highly correlated (i.e. Cramer's V > 0.999) categorical features from `df`. This is done by computing
+        Cramer's V statistic for measuring association between two categorical variables, and dropping all but one
+        feature from each correlated group.
+
+        Args:
+            df (pd.DataFrame): input dataframe, possibly with highly correlated features
+
+        Returns:
+            pd.DataFrame: modified dataframe with highly correlated features dropped
+        """
+
+        def cramers_v(x, y):
+            """
+            Compute Cramér's V statistic for measuring association between two categorical variables.
+
+            Cramér's V is a measure of association between two nominal (categorical) variables,
+            giving a value between 0 (no association) and 1 (perfect association). It is based
+            on the chi-square statistic and is useful for identifying relationships between categorical features.
+
+            Parameters:
+            ----------
+            x : pd.Series
+                First categorical variable (must be a Pandas Series).
+            y : pd.Series
+                Second categorical variable (must be a Pandas Series).
+
+            Returns:
+            -------
+            float
+                Cramér's V value, ranging from 0 to 1:
+                - 0: No association
+                - 1: Perfect association
+
+            Notes:
+            ------
+            - If one of the variables has only a single unique value, the function returns 0.
+            - The calculation is adjusted for bias correction to prevent overestimation in small datasets.
+            """
+            confusion_matrix = pd.crosstab(x, y)
+            chi2 = stats.chi2_contingency(confusion_matrix)[0]
+            n = confusion_matrix.sum().sum()
+            phi2 = chi2 / n
+            r, k = confusion_matrix.shape
+            phi2_corr = max(0, phi2 - ((k - 1) * (r - 1)) / (n - 1))
+            k_corr = k - ((k - 1) ** 2) / (n - 1)
+            r_corr = r - ((r - 1) ** 2) / (n - 1)
+            return np.sqrt(phi2_corr / min((k_corr - 1), (r_corr - 1))) if min(k_corr, r_corr) > 1 else 0
+
+        # Identify and drop highly correlated categorical features (Cramer's V > 0.999)
+        reserved_cols = [self.unit_identifier, self.time_identifier, self.target_feature]
+        categorical_cols = [i for i in df.select_dtypes(include=['object', 'category']).columns if i not in reserved_cols]  # Select categorical columns
+        cramers_matrix = pd.DataFrame(index=categorical_cols, columns=categorical_cols, dtype=float)
+
+        for col1 in categorical_cols:
+            for col2 in categorical_cols:
+                if col1 != col2:
+                    cramers_matrix.loc[col1, col2] = cramers_v(df[col1], df[col2])
+                else:
+                    cramers_matrix.loc[col1, col2] = 1.0
+
+        # Set correlation threshold
+        threshold = 0.999
+
+        # Get the upper triangle of the correlation matrix (to avoid duplicate comparisons)
+        upper_triangle = cramers_matrix.where(np.triu(np.ones(cramers_matrix.shape), k=1).astype(bool))
+
+        # Initialize set of columns to drop
+        to_drop = set()
+
+        # Iterate over columns and find correlated feature groups
+        for col in upper_triangle.columns:
+            correlated_features = upper_triangle.index[upper_triangle[col] > threshold].tolist()
+            if correlated_features:  # If correlated features exist
+                correlated_features.append(col)  # Include the current column
+                correlated_features = list(set(correlated_features) - to_drop)  # Remove already dropped features
+                if len(correlated_features) > 1:
+                    to_drop.update(correlated_features[1:])  # Keep 1 feature, drop the rest
+
+        # Drop redundant categorical features
+        if to_drop:
+            logging.info(f"Dropping strongly related categorical features: {to_drop}")
+            df = df.drop(columns=to_drop)
+
+        return df
+
+    # Function to compute Mutual Information (MI) for categorical-numeric features
+    def drop_highly_correlated_categorical_on_numeric_features(self, df):
+        """
+        Computes the correlation ratio (η²) between categorical and numeric features.
+        Identifies highly correlated categorical features per numeric feature and
+        drops only n-1 features per correlated group.
+
+        Parameters:
+        ----------
+        df : pd.DataFrame
+            The input DataFrame.
+
+        Returns:
+        -------
+        df : pd.DataFrame
+            DataFrame with redundant categorical features removed.
+        """
+
+        def correlation_ratio(categories, values):
+            """
+            Computes the correlation ratio (η²) between a categorical and numeric feature.
+
+            Parameters:
+                categories (pd.Series): Categorical variable.
+                values (pd.Series): Numeric variable.
+
+            Returns:
+                float: η² value (0 to 1), where higher values indicate stronger association.
+            """
+            categories = categories.astype("category")
+            category_groups = [values[categories == cat] for cat in categories.cat.categories]
+
+            mean_all = values.mean()
+            sst = ((values - mean_all) ** 2).sum()
+            ssw = sum(((group - group.mean()) ** 2).sum() for group in category_groups)
+
+            return 1 - ssw / sst if sst > 0 else 0
+
+        reserved_cols = [self.unit_identifier, self.time_identifier, self.target_feature]
+        categorical_cols = [i for i in df.select_dtypes(include=['object', 'category']).columns if i not in reserved_cols]
+        numeric_cols = [i for i in df.select_dtypes(include=[int, float, bool]).columns.tolist() if i not in reserved_cols]
+
+        # Compute η² matrix
+        eta_matrix = pd.DataFrame(index=categorical_cols, columns=numeric_cols, dtype=float)
+
+        for cat_col in categorical_cols:
+            for num_col in numeric_cols:
+                eta_matrix.loc[cat_col, num_col] = correlation_ratio(df[cat_col], df[num_col])
+
+        # Find categorical features that are highly correlated with numeric ones
+        to_drop = set()
+
+        # Identify correlated feature groups and drop n-1 features per group
+        threshold = 0.9
+        for num_col in numeric_cols:
+            correlated_features = eta_matrix.index[eta_matrix[num_col] > threshold].tolist()
+            correlated_features = list(set(correlated_features) - to_drop)
+            if len(correlated_features) > 1:
+                to_drop.update(correlated_features[1:])  # Keep one, drop the rest
+
+        # Drop redundant features
+        if to_drop:
+            logging.info(f"Dropping categorical features with a strong numeric-categorical relationship: {to_drop}")
+            df = df.drop(columns=to_drop)
+
+        return df
 
 
     def feature_lags(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -148,11 +351,12 @@ class DataProcessor:
         return wide_format
 
     def sample_group_observations(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Stratified sampling of observations for a given unit (`self.unit_identifier`) via quantiles of time. This is preferred over
-        a simple random sample per unit, which may not be representative of the full time spectrum that the unit contains
-        observations for. This function calculates the quantiles of `self.time_identifier`, where the number of
-        quantiles (bins) is determined by min(min(20, self.sampling_n), len(x)). The maximum number of observations per `unit_identifier` is
-        5 so that frequently-occurring `unit_identifiers`s don't dominate the loss.
+        """Stratified sampling of observations for a given unit (`self.unit_identifier`) via quantiles of time. This
+        is preferred over a simple random sample per unit, which may not be representative of the full time spectrum
+        that the unit contains observations for. This function calculates the quantiles of `self.time_identifier`,
+        where the number of quantiles (bins) is determined by min(min(20, self.sampling_n), len(x)). The maximum number
+        of observations per `unit_identifier` is 5 so that frequently-occurring `unit_identifiers`s don't dominate the
+        loss.
 
         Args:
             df (pd.DataFrame): dataframe of all units and their timepoints, and all other columns
@@ -171,9 +375,9 @@ class DataProcessor:
     def stratified_group_split(self, df: pd.DataFrame, test_size: float) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Creates a stratified, grouped cross-valiation on `self.unit_identifier`. Input `df` must be preprocessed and
-        either a panel or cross-sectional dataset. For panel data, the last observation per `self.unit_identifier` is used
-        for stratification on the target feature. Train and test sets are then merged back up with the panel dataset. For
-        cross-sectional data, the target feature is stratified on the entire dataset.
+        either a panel or cross-sectional dataset. For panel data, the last observation per `self.unit_identifier` is
+        used for stratification on the target feature. Train and test sets are then merged back up with the panel
+        dataset. For cross-sectional data, the target feature is stratified on the entire dataset.
 
         :param df: pd.DataFrame
         :param test_size: float, proportion of test (or validation) set

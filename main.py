@@ -34,12 +34,10 @@ def main(cfg: DictConfig) -> None:
         unit_identifier = cfg.unit_identifier,
         time_identifier  = cfg.time_identifier,
         target_feature = cfg.target_feature,
-        categorical_features_prefix = cfg.categorical_features_prefix,
         test_size = cfg.test_size,
         seed = cfg.seed,
         lag_length = cfg.lag_length,
-        sampling_n = cfg.sampling_n,
-        oversample = cfg.oversample
+        sampling_n = cfg.sampling_n
     )
 
     # 5. Preprocess data
