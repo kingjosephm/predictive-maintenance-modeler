@@ -41,7 +41,7 @@ class DataProcessor:
         self.lag_length = min(lag_length, 5) # maximum 5 lags, since higher number increases chance of overfitting
 
 
-    def preprocess(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    def preprocess(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Index, pd.Index, pd.Index]:
         """
         Initial preprocessing of data including:
             1) dropping degenerate features if present
@@ -54,9 +54,10 @@ class DataProcessor:
 
         :param df: pd.DataFrame, input dataframe
         :return: Tuple of
-            pd.DataFrame - train set
-            pd.DataFrame - test set
-            pd.DataFrame - validation set
+            pd.DataFrame - processed dataframe, including training, val, and test observations
+            pd.Index - training set index positions
+            pd.Index - val set index positions
+            pd.Index - test set index positions
         """
         current = time()
         logging.info("Preprocessing data..")
@@ -108,21 +109,22 @@ class DataProcessor:
 
         df = df.reset_index()  # bring back unit identifier
 
+        df = df.sample(frac=1.0, random_state=self.seed).reset_index(drop=True)  # shuffle
+
         # Stratified group split for train, test, and validation sets
-        train, test = self.stratified_group_split(df, self.test_size)
-        train, val = self.stratified_group_split(train, 0.2)
+        train_idx, val_idx, test_idx = self.stratified_group_split(df)
 
         # Normalization of numeric features, not necessary but can help with convergence
         scaler = MinMaxScaler(clip=True)
         reserved_cols = [self.unit_identifier, self.time_identifier, self.target_feature] + categorical_cols
         cols = [i for i in df.columns if i not in reserved_cols]
-        train[cols] = scaler.fit_transform(train[cols])
-        test[cols] = scaler.transform(test[cols])
-        val[cols] = scaler.transform(val[cols])
+        df.loc[train_idx, cols] = scaler.fit_transform(df.loc[train_idx, cols])
+        df.loc[test_idx, cols] = scaler.transform(df.loc[test_idx, cols])
+        df.loc[val_idx, cols] = scaler.transform(df.loc[val_idx, cols])
 
         logging.info(f"Data preprocessing complete, took: {round(time() - current, 2)} seconds. \n")
 
-        return train, test, val
+        return df, train_idx, val_idx, test_idx
 
     def drop_highly_correlated_numeric_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Drops highly correlated numeric features from `df` based on Pearson's correlation coefficient using a
@@ -372,18 +374,18 @@ class DataProcessor:
 
         return df.groupby([self.unit_identifier, quantile]).apply(lambda x: x.sample(1, random_state=self.seed)).reset_index(drop=True)
 
-    def stratified_group_split(self, df: pd.DataFrame, test_size: float) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def stratified_group_split(self, df: pd.DataFrame) -> Tuple[pd.Index, pd.Index, pd.Index]:
         """
         Creates a stratified, grouped cross-valiation on `self.unit_identifier`. Input `df` must be preprocessed and
         either a panel or cross-sectional dataset. For panel data, the last observation per `self.unit_identifier` is
         used for stratification on the target feature. Train and test sets are then merged back up with the panel
         dataset. For cross-sectional data, the target feature is stratified on the entire dataset.
 
-        :param df: pd.DataFrame
-        :param test_size: float, proportion of test (or validation) set
+        :param df: pd.DataFrame to be split
         :return: Tuple of
-            pd.DataFrame - train set, including X and y columns
-            pd.DataFrame - test set, including X and y columns
+            pd.Index - index positions of training observations
+            pd.Index - index positions of validation observations
+            pd.Index - index positions of test observations
         """
 
         # Target feature invariant across `self.unit_identifier` due to `self.preprocess()`, doesn't matter which one we select
@@ -391,13 +393,24 @@ class DataProcessor:
 
         # Create train-test split
         x_train, x_test, _, _ = train_test_split(undup[[self.unit_identifier]], undup[self.target_feature],
-                                                 test_size=test_size, random_state=self.seed,
+                                                 test_size=self.test_size, random_state=self.seed,
                                                  stratify=undup[self.target_feature])
 
-        # Create train and test sets, also shuffle
-        test = df[df[self.unit_identifier].isin(x_test[self.unit_identifier].tolist())].copy()\
-            .sample(frac=1.0, random_state=self.seed).reset_index(drop=True)
-        train = df[df[self.unit_identifier].isin(x_train[self.unit_identifier].tolist())].copy()\
-            .sample(frac=1.0, random_state=self.seed).reset_index(drop=True)  # includes val observations
+        # Filter out test observations
+        undup = undup[~undup[self.unit_identifier].isin(x_test[self.unit_identifier])]
 
-        return train, test
+        # Create train-validation split
+        x_train, x_val, _, _ = train_test_split(undup[[self.unit_identifier]], undup[self.target_feature],
+                                                 test_size=0.2, random_state=self.seed,
+                                                 stratify=undup[self.target_feature])
+
+        assert set(x_train[self.unit_identifier]).intersection(x_test[self.unit_identifier]).intersection(x_val[self.unit_identifier]) == set(), "Error! Train, val, and test sets are not mutually exclusive!"
+
+        assert set(x_train[self.unit_identifier]).union(x_test[self.unit_identifier]).union(x_val[self.unit_identifier]) == set(df[self.unit_identifier]), "Error! Train, val, and test sets do not cover all observations!"
+
+        # Specify index positions for train, val, and test sets
+        train_idx = df[df[self.unit_identifier].isin(x_train[self.unit_identifier].tolist())].index
+        val_idx = df[df[self.unit_identifier].isin(x_val[self.unit_identifier].tolist())].index
+        test_idx = df[df[self.unit_identifier].isin(x_test[self.unit_identifier].tolist())].index
+
+        return train_idx, val_idx, test_idx

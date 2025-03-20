@@ -1,12 +1,12 @@
 import os
-from joblib import dump
 import logging
-import json
 
 import hydra
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 import pandas as pd
+import numpy as np
+import xgboost as xgb
 
 from data_processing import DataProcessor
 
@@ -40,8 +40,9 @@ def main(cfg: DictConfig) -> None:
         sampling_n = cfg.sampling_n
     )
 
-    # 5. Preprocess data
-    train, test, val = dp.preprocess(df)
+    # 4. Preprocess data
+    df, train_idx, val_idx, test_idx = dp.preprocess(df)
+
 
     # 7. Instantiate appropriate model class
     # TODO
