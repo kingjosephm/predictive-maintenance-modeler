@@ -1,6 +1,6 @@
 import os
 import logging
-
+from time import time
 import hydra
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
@@ -100,6 +100,7 @@ def main(cfg: DictConfig) -> None:
         }
 
         # Train gradient boosted trees using AFT loss
+        current = time()
         evals_result = {}
         bst = xgb.train(params,
                         dtrain,
@@ -107,6 +108,8 @@ def main(cfg: DictConfig) -> None:
                         evals=[(dtrain, 'train'), (dvalid, 'valid')],
                         early_stopping_rounds=50,
                         evals_result=evals_result)
+
+        logging.info("Total model training time: %.2f seconds. \n", round(time() - current, 2))
 
         # Plot the training and validation losses
         plot_losses(evals_result, HydraConfig.get().runtime.output_dir)
