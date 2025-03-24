@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 import xgboost as xgb
-
+from utils import set_seeds, plot_losses
 from data_processing import DataProcessor
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -20,6 +20,8 @@ plt.rcParams.update({'font.size': 11})
 plt.rcParams['lines.linewidth'] = 1.5
 
 
+
+
 @hydra.main(config_path="./", config_name="config", version_base=None)
 def main(cfg: DictConfig) -> None:
     """Train a model using centralized learning
@@ -29,6 +31,7 @@ def main(cfg: DictConfig) -> None:
     cfg : DictConfig
         An omegaconf object that stores the hydra config.
     """
+    set_seeds(cfg.seed)
 
     # 1. Print parsed config
     logging.info(OmegaConf.to_yaml(cfg))
@@ -105,32 +108,8 @@ def main(cfg: DictConfig) -> None:
                         early_stopping_rounds=50,
                         evals_result=evals_result)
 
-        # Access the loss results
-        train_losses = evals_result['train']['aft-nloglik']
-        val_losses = evals_result['valid']['aft-nloglik']
-
-        # Convert to DataFrame for convenience
-        loss_df = pd.DataFrame({
-            'train_loss': train_losses,
-            'validation_loss': val_losses
-        })
-        loss_df.index.name = 'iteration'
-        loss_df.index += 1
-
-        # Plot the losses
-        plt.clf()
-        plt.figure(figsize=(8, 6))
-        plt.plot(loss_df.index, loss_df['train_loss'], label='Train')
-        plt.plot(loss_df.index, loss_df['validation_loss'], label='Validation')
-        plt.yscale('log')
-        plt.xlabel('Iteration')
-        plt.ylabel(r'$\log_{10}(\text{Negative Log-Likelihood})$')
-        plt.title('Training and Validation Loss by Iteration')
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(os.path.join(HydraConfig.get().runtime.output_dir, 'losses.png'), dpi=200)
-        plt.close()  # TODO - make separate function
-
+        # Plot the training and validation losses
+        plot_losses(evals_result, HydraConfig.get().runtime.output_dir)
 
 
 if __name__ == '__main__':
