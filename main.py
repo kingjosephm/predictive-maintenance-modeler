@@ -4,6 +4,7 @@ import logging
 import hydra
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
+import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 import xgboost as xgb
@@ -12,6 +13,12 @@ from data_processing import DataProcessor
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 os.environ['HYDRA_FULL_ERROR'] = '1'  # better error trace
+
+plt.style.use('ggplot')
+plt.rcParams['figure.dpi'] = 200
+plt.rcParams.update({'font.size': 11})
+plt.rcParams['lines.linewidth'] = 1.5
+
 
 @hydra.main(config_path="./", config_name="config", version_base=None)
 def main(cfg: DictConfig) -> None:
@@ -44,28 +51,87 @@ def main(cfg: DictConfig) -> None:
     df, train_idx, val_idx, test_idx = dp.preprocess(df)
 
 
-    # 7. Instantiate appropriate model class
-    # TODO
+    # 5. Create labels for xgboost interval censoring
+    if cfg.sampling_n == 0:  # simple cross-sectional data
+        y_lower_bound = df[cfg.time_identifier].copy()
+        y_upper_bound = np.where(df[cfg.target_feature] == 1, df[cfg.time_identifier], +np.inf)
+    else:  # panel data
+        y_lower_bound = np.array(df.groupby(cfg.unit_identifier)[cfg.time_identifier].shift(1).fillna(0))
+        y_upper_bound = np.where(df[cfg.target_feature] == 1, df[cfg.time_identifier], +np.inf)
 
-    # # 8. Fit model
-    # model.fit()
+    # Separate target feature from X matrix
+    df = df.set_index(cfg.unit_identifier)
+    target_features = [cfg.time_identifier, cfg.target_feature]
+    target = df[target_features].copy()
+    X = df.drop(columns=target_features)
 
-    # # 9. Evaluate model
-    # metrics = model.evaluate(uno=True, federated=False, brier=True if cfg.model in ['cox', 'gbm'] else False)
-    # logging.info(f"Performance metrics: \n {metrics}")
-    # with open(os.path.join(HydraConfig.get().runtime.output_dir, 'metrics.json'), 'w') as j:
-    #     json.dump(metrics, j)
 
-    # # 10. Save weights for federated learning [optional]
-    # if cfg.restrict_to_subset and cfg.model in ['svm', 'cox']:  # only save weights for SVM and Cox and if restricted to subset
-    #     logging.info("Saving model weights for federated learning to directory './model_weights'.")
-    #     dump(model.model, os.path.join('model_weights', f'{cfg.model}.joblib'))
+    # 5. Train model
+    if cfg.hyperoptimize:
+        raise NotImplementedError("Hyperoptimization is not yet implemented.")
 
-    # # 11. Save performance metrics and plot thereof
-    # model.plot_forecast(model_type=cfg.model,
-    #                     target_feature=cfg.target_feature,
-    #                     time_identifier=cfg.time_identifier,
-    #                     output_path=HydraConfig.get().runtime.output_dir)
+    else:
+
+        dtrain = xgb.DMatrix(X.iloc[train_idx],
+                            label_lower_bound=y_lower_bound[train_idx],
+                            label_upper_bound=y_upper_bound[train_idx],
+                            enable_categorical=True)
+
+        dvalid = xgb.DMatrix(X.iloc[val_idx],
+                    label_lower_bound=y_lower_bound[val_idx],
+                    label_upper_bound=y_upper_bound[val_idx],
+                    enable_categorical=True)
+
+        # Set default parameters
+        params = {
+            'verbosity': 0,
+            'objective': 'survival:aft',
+            'eval_metric': 'aft-nloglik',
+            'tree_method': 'hist',
+            'learning_rate': 0.03,
+            'aft_loss_distribution': 'normal',
+            'aft_loss_distribution_scale': 1.0,
+            'max_depth': 5,
+            'lambda': 0.5,
+            'alpha': 0.05
+        }
+
+        # Train gradient boosted trees using AFT loss
+        evals_result = {}
+        bst = xgb.train(params,
+                        dtrain,
+                        num_boost_round=10000,
+                        evals=[(dtrain, 'train'), (dvalid, 'valid')],
+                        early_stopping_rounds=50,
+                        evals_result=evals_result)
+
+        # Access the loss results
+        train_losses = evals_result['train']['aft-nloglik']
+        val_losses = evals_result['valid']['aft-nloglik']
+
+        # Convert to DataFrame for convenience
+        loss_df = pd.DataFrame({
+            'train_loss': train_losses,
+            'validation_loss': val_losses
+        })
+        loss_df.index.name = 'iteration'
+        loss_df.index += 1
+
+        # Plot the losses
+        plt.clf()
+        plt.figure(figsize=(8, 6))
+        plt.plot(loss_df.index, loss_df['train_loss'], label='Train')
+        plt.plot(loss_df.index, loss_df['validation_loss'], label='Validation')
+        plt.yscale('log')
+        plt.xlabel('Iteration')
+        plt.ylabel(r'$\log_{10}(\text{Negative Log-Likelihood})$')
+        plt.title('Training and Validation Loss by Iteration')
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(HydraConfig.get().runtime.output_dir, 'losses.png'), dpi=200)
+        plt.close()  # TODO - make separate function
+
+
 
 if __name__ == '__main__':
 
