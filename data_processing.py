@@ -2,7 +2,6 @@ from typing import Tuple
 import logging
 from time import time
 import warnings
-warnings
 
 import pandas as pd
 import numpy as np
@@ -361,18 +360,52 @@ class DataProcessor:
         loss.
 
         Args:
-            df (pd.DataFrame): dataframe of all units and their timepoints, and all other columns
+            df : dataframe of all units and their timepoints, and all other columns
 
         Returns:
-            pd.DataFrame: sampled dataframe
+            pd.DataFrame: sampled dataframe with all units, sampled
         """
+
+        def sample_group(g: pd.DataFrame) -> pd.DataFrame:
+            """Samples a group of observations based on the quantiles of the time identifier.
+
+            Args:
+                g : pd.DataFrame, group of observations for a given unit, including all timepoints
+
+            Returns:
+                pd.DataFrame : pd.DataFrame, sampled group of observations
+            """
+            n = len(g)
+            if n <= self.sampling_n:
+                return g
+            # Always include the first and last observations
+            first = g.iloc[[0]]
+            last = g.iloc[[-1]]
+            extra_needed = self.sampling_n - 2
+            middle = g.iloc[1:-1]
+            if extra_needed > 0 and not middle.empty:
+                # Determine the number of bins for quantile-based sampling
+                nbins = min(extra_needed, len(middle))
+                # Create quantile bins based on the time identifier
+                bins = pd.qcut(middle[self.time_identifier], q=nbins, duplicates='drop')
+                # For each bin, sample one observation randomly
+                extra = middle.groupby(bins, observed=True).apply(lambda x: x.sample(n=1, random_state=self.seed))
+                # Remove the extra group-level index added by groupby.apply
+                extra = extra.reset_index(drop=True)
+            else:
+                extra = pd.DataFrame(columns=g.columns)
+            # Concatenate the first, extra, and last observations, sorted by time
+            return pd.concat([first, extra, last]).sort_values(self.time_identifier)
+
         min_obs_group = df.groupby([self.unit_identifier])[self.time_identifier].count().min()
         if min_obs_group < self.sampling_n:
-            logging.warning(f"Warning! Minimum number of observations per '{self.unit_identifier}' is {min_obs_group}, which is less than `self.sampling_n` of {self.sampling_n}. This will yield an unbalanced panel. Either reduce the number of `self.sampling_n` to {min_obs_group} or verify that an unbalanced panel is acceptable.")
+            logging.warning("Warning! Minimum number of observations per '%s' is %d, which is less than `self.sampling_n` of %d. This will yield an unbalanced panel. Either reduce the number of `self.sampling_n` to %d or verify that an unbalanced panel is acceptable.", self.unit_identifier, min_obs_group, self.sampling_n, min_obs_group)
 
-        quantile = df.groupby([self.unit_identifier])[self.time_identifier].apply(lambda x:  pd.qcut(x, q=min(min(20, self.sampling_n), len(x)), labels=False)).reset_index(drop=True)
+        sampled_rows = df[[self.unit_identifier,
+                           self.time_identifier]].groupby(self.unit_identifier, group_keys=False, observed=True)\
+                                                                                    .apply(sample_group).reset_index(drop=True)
 
-        return df.groupby([self.unit_identifier, quantile]).apply(lambda x: x.sample(1, random_state=self.seed)).reset_index(drop=True)
+        return df.merge(sampled_rows, on=[self.unit_identifier, self.time_identifier], how='inner').reset_index(drop=True)
 
     def stratified_group_split(self, df: pd.DataFrame) -> Tuple[pd.Index, pd.Index, pd.Index]:
         """
