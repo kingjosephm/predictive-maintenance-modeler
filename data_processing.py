@@ -68,7 +68,7 @@ class DataProcessor:
         # Drop any degenerate (invariant) features
         degenerate_features = [i for i in df.columns if df[i].nunique() == 1]
         if degenerate_features:
-            logging.info(f"Dropping degenerate features: {degenerate_features}")
+            logging.info("Dropping degenerate features: %s", degenerate_features)
             df = df.drop(columns=degenerate_features)
 
         # Set categorical features
@@ -84,7 +84,7 @@ class DataProcessor:
         # Verify `self.df` is in fact a panel dataset
         max_group_obs = df.groupby(self.unit_identifier)[self.time_identifier].count().max()
         if max_group_obs == 1 & self.sampling_n > 1:
-            logging.warning(f"`self.df` does not appear to be a panel dataset, even though `self.sampling_n` > 1. Setting `self.sampling_n` to 1..")
+            logging.warning("`self.df` does not appear to be a panel dataset, even though `self.sampling_n` > 1. Setting `self.sampling_n` to 1..")
             self.sampling_n = 1
             self.lag_length = 0  # no lags for cross-sectional data
 
@@ -93,17 +93,17 @@ class DataProcessor:
 
         # Downsample panel
         if self.sampling_n > 1:
-            logging.info(f"Downsampling panel to min({self.sampling_n}, len(x)) observations per '{self.unit_identifier}'..")
+            logging.info("Downsampling panel to min(%d, len(x)) observations per '%s'..", self.sampling_n, self.unit_identifier)
             df = self.sample_group_observations(df)
         else:  # keep last observation per unit
-            logging.info(f"Keeping only last observation per '{self.unit_identifier}'. This will not affect purely cross-sectional data.")
+            logging.info("Keeping only last observation per '%s'. This will not affect purely cross-sectional data.", self.unit_identifier)
             df = df[df[self.time_identifier] == df.groupby(self.unit_identifier)[self.time_identifier].transform('max')]
 
         df = df.set_index(self.unit_identifier)  # "hide" unit identifier for now
 
         # Add feature lags [optional]
         if self.lag_length > 0:
-            logging.info(f"Adding lags up to {self.lag_length} periods..")
+            logging.info("Adding lags up to %d periods..", self.lag_length)
             df = self.feature_lags(df)
 
         df = df.reset_index()  # bring back unit identifier
@@ -121,7 +121,7 @@ class DataProcessor:
         df.loc[test_idx, cols] = scaler.transform(df.loc[test_idx, cols])
         df.loc[val_idx, cols] = scaler.transform(df.loc[val_idx, cols])
 
-        logging.info(f"Data preprocessing complete, took: {round(time() - current, 2)} seconds. \n")
+        logging.info("Data preprocessing complete, took: %.2f seconds. \n", round(time() - current, 2))
 
         return df, train_idx, val_idx, test_idx
 
@@ -154,7 +154,7 @@ class DataProcessor:
                 if len(correlated_features) > 1:
                     to_drop.update(correlated_features[1:])  # Keep 1 feature, drop others
         if to_drop:
-            logging.info(f"Dropping highly correlated numeric features: {to_drop}")
+            logging.info("Dropping highly correlated numeric features: %s", to_drop)
             df = df.drop(columns=to_drop)
 
         return df
@@ -240,7 +240,7 @@ class DataProcessor:
 
         # Drop redundant categorical features
         if to_drop:
-            logging.info(f"Dropping strongly related categorical features: {to_drop}")
+            logging.info("Dropping strongly related categorical features: %s", to_drop)
             df = df.drop(columns=to_drop)
 
         return df
@@ -307,7 +307,7 @@ class DataProcessor:
 
         # Drop redundant features
         if to_drop:
-            logging.info(f"Dropping categorical features with a strong numeric-categorical relationship: {to_drop}")
+            logging.info("Dropping categorical features with a strong numeric-categorical relationship: %s", to_drop)
             df = df.drop(columns=to_drop)
 
         return df
@@ -326,7 +326,7 @@ class DataProcessor:
         # minimum number of observations per unit
         min_group_obs = df.groupby(self.unit_identifier)[df.columns[0]].count().min()
         if min_group_obs < self.lag_length:
-            logging.warning(f"Warning! Minimum number of observations per '{self.unit_identifier}' is {min_group_obs}, which is less than `self.lag_length` of {self.lag_length}. Lags will be constructed up to {min_group_obs} periods.")
+            logging.warning("Warning! Minimum number of observations per '%s' is %d, which is less than `self.lag_length` of %d. Lags will be constructed up to %d periods.", self.unit_identifier, min_group_obs, self.lag_length, min_group_obs)
 
         # Identify invariant cols by `self.unit_identifier` - we don't want to add lags, these are fixed attributes
         uniques = df.reset_index().groupby(self.unit_identifier).apply(lambda x: x.nunique())
