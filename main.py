@@ -1,6 +1,7 @@
 import os
 import logging
 from time import time
+
 import hydra
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
@@ -18,9 +19,6 @@ plt.style.use('ggplot')
 plt.rcParams['figure.dpi'] = 200
 plt.rcParams.update({'font.size': 11})
 plt.rcParams['lines.linewidth'] = 1.5
-
-
-
 
 @hydra.main(config_path="./", config_name="config", version_base=None)
 def main(cfg: DictConfig) -> None:
@@ -55,12 +53,15 @@ def main(cfg: DictConfig) -> None:
 
 
     # 5. Create labels for xgboost interval censoring
-    if cfg.sampling_n == 0:  # simple cross-sectional data
-        y_lower_bound = df[cfg.time_identifier].copy()
-        y_upper_bound = np.where(df[cfg.target_feature] == 1, df[cfg.time_identifier], +np.inf)
-    else:  # panel data
-        y_lower_bound = np.array(df.groupby(cfg.unit_identifier)[cfg.time_identifier].shift(1).fillna(0))
-        y_upper_bound = np.where(df[cfg.target_feature] == 1, df[cfg.time_identifier], +np.inf)
+    assert cfg.sampling_n >= 1, "Sampling n must be greater than or equal to 1."
+    if cfg.sampling_n == 1:  # simple cross-sectional data
+        y_lower_bound = pd.Series(df[cfg.time_identifier].copy(), name='y_lower_bound')
+        y_upper_bound = pd.Series(df[cfg.time_identifier].copy(), name='y_upper_bound')
+        y_upper_bound = y_upper_bound.where(df[cfg.target_feature] == 1, +np.inf)
+    else:  # panel data -> interval censored
+        y_lower_bound = pd.Series(df[cfg.time_identifier].copy(), name='y_lower_bound')
+        y_upper_bound = pd.Series(df[cfg.time_identifier].copy(), name='y_upper_bound')
+        y_upper_bound = y_upper_bound.where(df[cfg.target_feature] == 1, +np.inf)
 
     # Separate target feature from X matrix
     df = df.set_index(cfg.unit_identifier)
