@@ -5,6 +5,7 @@ from time import time
 import hydra
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
+import matplotlib
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
@@ -15,6 +16,8 @@ from data_processing import DataProcessor
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 os.environ['HYDRA_FULL_ERROR'] = '1'  # better error trace
 
+
+matplotlib.use('Agg')  # Use non-interactive backend
 plt.style.use('ggplot')
 plt.rcParams['figure.dpi'] = 200
 plt.rcParams.update({'font.size': 11})
