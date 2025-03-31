@@ -2,7 +2,6 @@ from typing import Tuple
 import logging
 from time import time
 import warnings
-warnings
 
 import pandas as pd
 import numpy as np
@@ -41,7 +40,7 @@ class DataProcessor:
         self.lag_length = min(lag_length, 5) # maximum 5 lags, since higher number increases chance of overfitting
 
 
-    def preprocess(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    def preprocess(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Index, pd.Index, pd.Index]:
         """
         Initial preprocessing of data including:
             1) dropping degenerate features if present
@@ -54,9 +53,10 @@ class DataProcessor:
 
         :param df: pd.DataFrame, input dataframe
         :return: Tuple of
-            pd.DataFrame - train set
-            pd.DataFrame - test set
-            pd.DataFrame - validation set
+            pd.DataFrame - processed dataframe, including training, val, and test observations
+            pd.Index - training set index positions
+            pd.Index - val set index positions
+            pd.Index - test set index positions
         """
         current = time()
         logging.info("Preprocessing data..")
@@ -68,7 +68,7 @@ class DataProcessor:
         # Drop any degenerate (invariant) features
         degenerate_features = [i for i in df.columns if df[i].nunique() == 1]
         if degenerate_features:
-            logging.info(f"Dropping degenerate features: {degenerate_features}")
+            logging.info("Dropping degenerate features: %s", degenerate_features)
             df = df.drop(columns=degenerate_features)
 
         # Set categorical features
@@ -84,7 +84,7 @@ class DataProcessor:
         # Verify `self.df` is in fact a panel dataset
         max_group_obs = df.groupby(self.unit_identifier)[self.time_identifier].count().max()
         if max_group_obs == 1 & self.sampling_n > 1:
-            logging.warning(f"`self.df` does not appear to be a panel dataset, even though `self.sampling_n` > 1. Setting `self.sampling_n` to 1..")
+            logging.warning("`self.df` does not appear to be a panel dataset, even though `self.sampling_n` > 1. Setting `self.sampling_n` to 1..")
             self.sampling_n = 1
             self.lag_length = 0  # no lags for cross-sectional data
 
@@ -93,36 +93,37 @@ class DataProcessor:
 
         # Downsample panel
         if self.sampling_n > 1:
-            logging.info(f"Downsampling panel to min({self.sampling_n}, len(x)) observations per '{self.unit_identifier}'..")
+            logging.info("Downsampling panel to min(%d, len(x)) observations per '%s'..", self.sampling_n, self.unit_identifier)
             df = self.sample_group_observations(df)
         else:  # keep last observation per unit
-            logging.info(f"Keeping only last observation per '{self.unit_identifier}'. This will not affect purely cross-sectional data.")
+            logging.info("Keeping only last observation per '%s'. This will not affect purely cross-sectional data.", self.unit_identifier)
             df = df[df[self.time_identifier] == df.groupby(self.unit_identifier)[self.time_identifier].transform('max')]
 
         df = df.set_index(self.unit_identifier)  # "hide" unit identifier for now
 
         # Add feature lags [optional]
         if self.lag_length > 0:
-            logging.info(f"Adding lags up to {self.lag_length} periods..")
+            logging.info("Adding lags up to %d periods..", self.lag_length)
             df = self.feature_lags(df)
 
         df = df.reset_index()  # bring back unit identifier
 
+        df = df.sample(frac=1.0, random_state=self.seed).reset_index(drop=True)  # shuffle
+
         # Stratified group split for train, test, and validation sets
-        train, test = self.stratified_group_split(df, self.test_size)
-        train, val = self.stratified_group_split(train, 0.2)
+        train_idx, val_idx, test_idx = self.stratified_group_split(df)
 
         # Normalization of numeric features, not necessary but can help with convergence
         scaler = MinMaxScaler(clip=True)
         reserved_cols = [self.unit_identifier, self.time_identifier, self.target_feature] + categorical_cols
         cols = [i for i in df.columns if i not in reserved_cols]
-        train[cols] = scaler.fit_transform(train[cols])
-        test[cols] = scaler.transform(test[cols])
-        val[cols] = scaler.transform(val[cols])
+        df.loc[train_idx, cols] = scaler.fit_transform(df.loc[train_idx, cols])
+        df.loc[test_idx, cols] = scaler.transform(df.loc[test_idx, cols])
+        df.loc[val_idx, cols] = scaler.transform(df.loc[val_idx, cols])
 
-        logging.info(f"Data preprocessing complete, took: {round(time() - current, 2)} seconds. \n")
+        logging.info("Data preprocessing complete, took: %.2f seconds. \n", round(time() - current, 2))
 
-        return train, test, val
+        return df, train_idx, val_idx, test_idx
 
     def drop_highly_correlated_numeric_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Drops highly correlated numeric features from `df` based on Pearson's correlation coefficient using a
@@ -153,7 +154,7 @@ class DataProcessor:
                 if len(correlated_features) > 1:
                     to_drop.update(correlated_features[1:])  # Keep 1 feature, drop others
         if to_drop:
-            logging.info(f"Dropping highly correlated numeric features: {to_drop}")
+            logging.info("Dropping highly correlated numeric features: %s", to_drop)
             df = df.drop(columns=to_drop)
 
         return df
@@ -239,7 +240,7 @@ class DataProcessor:
 
         # Drop redundant categorical features
         if to_drop:
-            logging.info(f"Dropping strongly related categorical features: {to_drop}")
+            logging.info("Dropping strongly related categorical features: %s", to_drop)
             df = df.drop(columns=to_drop)
 
         return df
@@ -306,7 +307,7 @@ class DataProcessor:
 
         # Drop redundant features
         if to_drop:
-            logging.info(f"Dropping categorical features with a strong numeric-categorical relationship: {to_drop}")
+            logging.info("Dropping categorical features with a strong numeric-categorical relationship: %s", to_drop)
             df = df.drop(columns=to_drop)
 
         return df
@@ -325,7 +326,7 @@ class DataProcessor:
         # minimum number of observations per unit
         min_group_obs = df.groupby(self.unit_identifier)[df.columns[0]].count().min()
         if min_group_obs < self.lag_length:
-            logging.warning(f"Warning! Minimum number of observations per '{self.unit_identifier}' is {min_group_obs}, which is less than `self.lag_length` of {self.lag_length}. Lags will be constructed up to {min_group_obs} periods.")
+            logging.warning("Warning! Minimum number of observations per '%s' is %d, which is less than `self.lag_length` of %d. Lags will be constructed up to %d periods.", self.unit_identifier, min_group_obs, self.lag_length, min_group_obs)
 
         # Identify invariant cols by `self.unit_identifier` - we don't want to add lags, these are fixed attributes
         uniques = df.reset_index().groupby(self.unit_identifier).apply(lambda x: x.nunique())
@@ -359,45 +360,94 @@ class DataProcessor:
         loss.
 
         Args:
-            df (pd.DataFrame): dataframe of all units and their timepoints, and all other columns
+            df : dataframe of all units and their timepoints, and all other columns
 
         Returns:
-            pd.DataFrame: sampled dataframe
+            pd.DataFrame: sampled dataframe with all units, sampled
         """
+
+        def sample_group(g: pd.DataFrame) -> pd.DataFrame:
+            """Samples a group of observations based on the quantiles of the time identifier.
+
+            Args:
+                g : pd.DataFrame, group of observations for a given unit, including all timepoints
+
+            Returns:
+                pd.DataFrame : pd.DataFrame, sampled group of observations
+            """
+            n = len(g)
+            if n <= self.sampling_n:
+                return g
+            # Always include the first and last observations
+            first = g.iloc[[0]]
+            last = g.iloc[[-1]]
+            extra_needed = self.sampling_n - 2
+            middle = g.iloc[1:-1]
+            if extra_needed > 0 and not middle.empty:
+                # Determine the number of bins for quantile-based sampling
+                nbins = min(extra_needed, len(middle))
+                # Create quantile bins based on the time identifier
+                bins = pd.qcut(middle[self.time_identifier], q=nbins, duplicates='drop')
+                # For each bin, sample one observation randomly
+                extra = middle.groupby(bins, observed=True).apply(lambda x: x.sample(n=1, random_state=self.seed))
+                # Remove the extra group-level index added by groupby.apply
+                extra = extra.reset_index(drop=True)
+            else:
+                extra = pd.DataFrame(columns=g.columns)
+            # Concatenate the first, extra, and last observations, sorted by time
+            return pd.concat([first, extra, last]).sort_values(self.time_identifier)
+
         min_obs_group = df.groupby([self.unit_identifier])[self.time_identifier].count().min()
         if min_obs_group < self.sampling_n:
-            logging.warning(f"Warning! Minimum number of observations per '{self.unit_identifier}' is {min_obs_group}, which is less than `self.sampling_n` of {self.sampling_n}. This will yield an unbalanced panel. Either reduce the number of `self.sampling_n` to {min_obs_group} or verify that an unbalanced panel is acceptable.")
+            logging.warning("Warning! Minimum number of observations per '%s' is %d, which is less than `self.sampling_n` of %d. This will yield an unbalanced panel. Either reduce the number of `self.sampling_n` to %d or verify that an unbalanced panel is acceptable.", self.unit_identifier, min_obs_group, self.sampling_n, min_obs_group)
 
-        quantile = df.groupby([self.unit_identifier])[self.time_identifier].apply(lambda x:  pd.qcut(x, q=min(min(20, self.sampling_n), len(x)), labels=False)).reset_index(drop=True)
+        sampled_rows = df[[self.unit_identifier,
+                           self.time_identifier]].groupby(self.unit_identifier, group_keys=False, observed=True)\
+                                                                                    .apply(sample_group).reset_index(drop=True)
 
-        return df.groupby([self.unit_identifier, quantile]).apply(lambda x: x.sample(1, random_state=self.seed)).reset_index(drop=True)
+        return df.merge(sampled_rows, on=[self.unit_identifier, self.time_identifier], how='inner').reset_index(drop=True)
 
-    def stratified_group_split(self, df: pd.DataFrame, test_size: float) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def stratified_group_split(self, df: pd.DataFrame) -> Tuple[pd.Index, pd.Index, pd.Index]:
         """
         Creates a stratified, grouped cross-valiation on `self.unit_identifier`. Input `df` must be preprocessed and
         either a panel or cross-sectional dataset. For panel data, the last observation per `self.unit_identifier` is
         used for stratification on the target feature. Train and test sets are then merged back up with the panel
         dataset. For cross-sectional data, the target feature is stratified on the entire dataset.
 
-        :param df: pd.DataFrame
-        :param test_size: float, proportion of test (or validation) set
+        :param df: pd.DataFrame to be split
         :return: Tuple of
-            pd.DataFrame - train set, including X and y columns
-            pd.DataFrame - test set, including X and y columns
+            pd.Index - index positions of training observations
+            pd.Index - index positions of validation observations
+            pd.Index - index positions of test observations
         """
 
-        # Target feature invariant across `self.unit_identifier` due to `self.preprocess()`, doesn't matter which one we select
-        undup = df[[self.unit_identifier, self.target_feature]].drop_duplicates()
+        # Get last observation per unit
+        undup = df[df[self.time_identifier] ==
+                   df.groupby(self.unit_identifier)[self.time_identifier].transform('max')]\
+                       [[self.unit_identifier, self.target_feature]].sort_values(by=[self.unit_identifier]).reset_index(drop=True)
 
         # Create train-test split
         x_train, x_test, _, _ = train_test_split(undup[[self.unit_identifier]], undup[self.target_feature],
-                                                 test_size=test_size, random_state=self.seed,
+                                                 test_size=self.test_size, random_state=self.seed,
                                                  stratify=undup[self.target_feature])
 
-        # Create train and test sets, also shuffle
-        test = df[df[self.unit_identifier].isin(x_test[self.unit_identifier].tolist())].copy()\
-            .sample(frac=1.0, random_state=self.seed).reset_index(drop=True)
-        train = df[df[self.unit_identifier].isin(x_train[self.unit_identifier].tolist())].copy()\
-            .sample(frac=1.0, random_state=self.seed).reset_index(drop=True)  # includes val observations
+        # Filter out test observations
+        undup = undup[~undup[self.unit_identifier].isin(x_test[self.unit_identifier])]
 
-        return train, test
+        # Create train-validation split
+        x_train, x_val, _, _ = train_test_split(undup[[self.unit_identifier]], undup[self.target_feature],
+                                                 test_size=0.2, random_state=self.seed,
+                                                 stratify=undup[self.target_feature])
+
+        assert set(x_train[self.unit_identifier]).intersection(x_test[self.unit_identifier]).intersection(x_val[self.unit_identifier]) == set(), "Error! Train, val, and test sets are not mutually exclusive!"
+
+        assert set(x_train[self.unit_identifier]).union(x_test[self.unit_identifier]).union(x_val[self.unit_identifier]) == set(df[self.unit_identifier]), "Error! Train, val, and test sets do not cover all observations!"
+
+        # Specify index positions for train, val, and test sets
+        train_idx = df[df[self.unit_identifier].isin(x_train[self.unit_identifier].tolist())].index
+        val_idx = df[df[self.unit_identifier].isin(x_val[self.unit_identifier].tolist())].index
+        test_idx = df[df[self.unit_identifier].isin(x_test[self.unit_identifier].tolist())].index
+
+        assert set(train_idx).intersection(val_idx).intersection(test_idx) == set(), "Error! Train, val, and test set indices are not mutually exclusive!"
+
+        return train_idx, val_idx, test_idx
