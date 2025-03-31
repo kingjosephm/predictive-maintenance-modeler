@@ -116,10 +116,17 @@ def plot_survival_curves(surv_probs, time_grid, target, output_path) -> None:
     output_path : str
         Path to save the plot.
     """
+    # Unduplicate target, in case of panel data, which is critical for Kaplan-Meier
+    undup_target = target.reset_index()
+    cols = undup_target.columns
+    max_time = undup_target.groupby(cols[0])[cols[1]].transform('max')
+    undup_target = undup_target[undup_target[cols[1]] == max_time]
 
+    # Plot the survival curves
+    plt.clf()
     plt.figure(figsize=(10, 6))
     kmf = KaplanMeierFitter(label='Observed')
-    kmf.fit(durations=target.iloc[:, 0], event_observed=target.iloc[:, 1])
+    kmf.fit(durations=undup_target.iloc[:, 1], event_observed=undup_target.iloc[:, 2])
     kmf.survival_function_.plot()
     plt.plot(time_grid, np.mean(surv_probs, axis=0), label='Forecasted', linestyle='--')
     plt.xlabel('Time')
