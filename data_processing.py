@@ -424,7 +424,7 @@ class DataProcessor:
         # Get last observation per unit
         undup = df[df[self.time_identifier] ==
                    df.groupby(self.unit_identifier)[self.time_identifier].transform('max')]\
-                       [[self.unit_identifier, self.target_feature]]
+                       [[self.unit_identifier, self.target_feature]].sort_values(by=[self.unit_identifier]).reset_index(drop=True)
 
         # Create train-test split
         x_train, x_test, _, _ = train_test_split(undup[[self.unit_identifier]], undup[self.target_feature],
