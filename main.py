@@ -73,8 +73,7 @@ def main(cfg: DictConfig) -> None:
     target_features = [cfg.time_identifier, cfg.target_feature]
     target = df[target_features].copy()
     target[cfg.target_feature] = target[cfg.target_feature].astype(bool)
-    X = df.drop(columns=target_features)
-
+    X = df.drop(columns=cfg.target_feature)
 
     # 5. Train model
     if cfg.hyperoptimize:
