@@ -60,9 +60,9 @@ def main(cfg: DictConfig) -> None:
     if cfg.sampling_n == 1:  # simple cross-sectional data
         y_lower_bound = pd.Series(df[cfg.time_identifier].copy(), name='y_lower_bound')
         y_upper_bound = pd.Series(df[cfg.time_identifier].copy(), name='y_upper_bound')
-        y_upper_bound = y_upper_bound.where(df[cfg.target_feature] == 1, +np.inf)
+        y_upper_bound = y_upper_bound.where(df[cfg.target_feature] == 1, +np.inf)  # where condition true, use orig value, else +inf
     else:  # panel data -> interval censored
-        y_lower_bound = pd.Series(df[cfg.time_identifier].copy(), name='y_lower_bound')
+        y_lower_bound = pd.Series(df.groupby(cfg.unit_identifier)[cfg.time_identifier].shift(1).fillna(0), name='y_lower_bound')  # missing values are left-censored and set to 0
         y_upper_bound = pd.Series(df[cfg.time_identifier].copy(), name='y_upper_bound')
         y_upper_bound = y_upper_bound.where(df[cfg.target_feature] == 1, +np.inf)
 
