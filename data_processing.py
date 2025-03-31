@@ -421,8 +421,10 @@ class DataProcessor:
             pd.Index - index positions of test observations
         """
 
-        # Target feature invariant across `self.unit_identifier` due to `self.preprocess()`, doesn't matter which one we select
-        undup = df[[self.unit_identifier, self.target_feature]].drop_duplicates()
+        # Get last observation per unit
+        undup = df[df[self.time_identifier] ==
+                   df.groupby(self.unit_identifier)[self.time_identifier].transform('max')]\
+                       [[self.unit_identifier, self.target_feature]]
 
         # Create train-test split
         x_train, x_test, _, _ = train_test_split(undup[[self.unit_identifier]], undup[self.target_feature],
