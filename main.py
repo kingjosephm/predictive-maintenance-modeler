@@ -12,7 +12,7 @@ import numpy as np
 import xgboost as xgb
 from sksurv.metrics import concordance_index_ipcw
 
-from utils import set_seeds, plot_losses
+from utils import set_seeds, plot_losses, survival_curves, plot_survival_curves
 from data_processing import DataProcessor
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -129,19 +129,28 @@ def main(cfg: DictConfig) -> None:
         plot_losses(evals_result, HydraConfig.get().runtime.output_dir)
 
         # Estimated median survival time, we treat as risk score, where higher risk scores indicate higher risk of failure
-        pred_test = -bst.predict(dtest)
-        pred_train = -bst.predict(dtrain)
+        pred_test = bst.predict(dtest)
+        pred_train = bst.predict(dtrain)
 
         # Calculate IPCW Concordance Index
         c_indices = {}
         c_indices['train'] = concordance_index_ipcw(survival_train=ytrain, survival_test=ytrain,
-                                              estimate=pred_train, tau=target.iloc[train_idx][cfg.time_identifier].max())[0]
+                                              estimate=-pred_train, tau=target.iloc[train_idx][cfg.time_identifier].max())[0]
         c_indices['test'] = concordance_index_ipcw(survival_train=ytrain, survival_test=ytest,
-                                              estimate=pred_test, tau=target.iloc[train_idx][cfg.time_identifier].max())[0]
+                                              estimate=-pred_test, tau=target.iloc[train_idx][cfg.time_identifier].max())[0]
 
         logging.info("Concordance Index (train): %.4f", c_indices['train'])
         logging.info("Concordance Index (test): %.4f", c_indices['test'])
 
+
+        # Plot survival curves
+        time_grid=np.linspace(0.0001, target.iloc[train_idx][cfg.time_identifier].max(), 100)
+        surv_probs = survival_curves(time_grid=time_grid,predicted_medians=pred_test,
+                                     sigma=params['aft_loss_distribution_scale'],
+                                     distribution=params['aft_loss_distribution'])
+
+        plot_survival_curves(surv_probs=surv_probs, time_grid=time_grid, target=target.iloc[test_idx],
+                             output_path=HydraConfig.get().runtime.output_dir)
 
 
 
