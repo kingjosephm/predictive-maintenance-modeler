@@ -446,4 +446,6 @@ class DataProcessor:
         val_idx = df[df[self.unit_identifier].isin(x_val[self.unit_identifier].tolist())].index
         test_idx = df[df[self.unit_identifier].isin(x_test[self.unit_identifier].tolist())].index
 
+        assert set(train_idx).intersection(val_idx).intersection(test_idx) == set(), "Error! Train, val, and test set indices are not mutually exclusive!"
+
         return train_idx, val_idx, test_idx
