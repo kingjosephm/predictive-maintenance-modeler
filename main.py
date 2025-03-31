@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 import xgboost as xgb
-from sksurv.metrics import concordance_index_ipcw
+from sksurv.metrics import concordance_index_ipcw, integrated_brier_score
 
 from utils import set_seeds, plot_losses, survival_curves, plot_survival_curves
 from data_processing import DataProcessor
@@ -143,15 +143,20 @@ def main(cfg: DictConfig) -> None:
 
 
         # Plot survival curves
-        time_grid=np.linspace(0.0001, target.iloc[train_idx][cfg.time_identifier].max(), 100)
-        surv_probs = survival_curves(time_grid=time_grid,predicted_medians=pred_test,
+        test_min = target.iloc[test_idx][cfg.time_identifier].min() + 1e-5 # avoid zero
+        test_max = target.iloc[test_idx][cfg.time_identifier].max()
+        time_grid = np.linspace(test_min, test_max, 100, endpoint=False)
+        surv_probs = survival_curves(time_grid=time_grid, predicted_medians=pred_test,
                                      sigma=params['aft_loss_distribution_scale'],
                                      distribution=params['aft_loss_distribution'])
 
         plot_survival_curves(surv_probs=surv_probs, time_grid=time_grid, target=target.iloc[test_idx],
                              output_path=HydraConfig.get().runtime.output_dir)
 
+        # Calculate integrated brier score
+        ibs = integrated_brier_score(ytrain, ytest, surv_probs, time_grid)
 
+        logging.info("Integrated Brier Score: %.4f", ibs)
 
 if __name__ == '__main__':
 
