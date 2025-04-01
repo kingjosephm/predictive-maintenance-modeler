@@ -382,6 +382,8 @@ class DataProcessor:
             first = g.iloc[[0]]
             last = g.iloc[[-1]]
             extra_needed = self.sampling_n - 2
+            if extra_needed == 0:
+                return pd.concat([first, last]).sort_values(self.time_identifier)
             middle = g.iloc[1:-1]
             if extra_needed > 0 and not middle.empty:
                 # Determine the number of bins for quantile-based sampling
