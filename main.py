@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 from time import time
 
@@ -20,7 +21,6 @@ from data_processing import DataProcessor
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 os.environ['HYDRA_FULL_ERROR'] = '1'  # better error trace
 
-
 matplotlib.use('Agg')  # Use non-interactive backend
 plt.style.use('ggplot')
 plt.rcParams['figure.dpi'] = 200
@@ -36,6 +36,8 @@ def main(cfg: DictConfig) -> None:
     cfg : DictConfig
         An omegaconf object that stores the hydra config.
     """
+    start_time = time()
+
     set_seeds(cfg.seed)
 
     # 1. Print parsed config
@@ -58,7 +60,6 @@ def main(cfg: DictConfig) -> None:
     # 4. Preprocess data
     df, train_idx, val_idx, test_idx = dp.preprocess(df)
 
-
     # 5. Create labels for xgboost interval censoring
     assert cfg.sampling_n >= 1, "Sampling n must be greater than or equal to 1."
     if cfg.sampling_n == 1:  # simple cross-sectional data
@@ -70,14 +71,20 @@ def main(cfg: DictConfig) -> None:
         y_upper_bound = pd.Series(df[cfg.time_identifier].copy(), name='y_upper_bound')
         y_upper_bound = y_upper_bound.where(df[cfg.target_feature] == 1, +np.inf)
 
-    # Separate target feature from X matrix
+    # 6. Separate target feature from X matrix
     df = df.set_index(cfg.unit_identifier)  # note - this has no effect on positional indexing below
     target_features = [cfg.time_identifier, cfg.target_feature]
     target = df[target_features].copy()
     target[cfg.target_feature] = target[cfg.target_feature].astype(bool)
     X = df.drop(columns=cfg.target_feature)
 
-    # 5. Train model
+    # 7. Base model parameters, regardless if hyperoptimization is performed
+    base_params = {'verbosity': 0,
+                   'objective': 'survival:aft',
+                   'eval_metric': 'aft-nloglik',
+                   'tree_method': 'hist'}
+
+    # 8. [Optional] Hyperparameter optimization
     if cfg.hyperoptimize:
 
         def objective(trial: optuna.Trial) -> float:
@@ -94,11 +101,7 @@ def main(cfg: DictConfig) -> None:
                 float: mean IPCW concordance index across the folds
             """
 
-            params = {
-                "objective": "survival:aft",
-                "eval_metric": "aft-nloglik",
-                "tree_method": "hist",
-                "verbosity": 0,
+            trial_params = {
                 "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.1, log=True),
                 "aft_loss_distribution": trial.suggest_categorical("aft_loss_distribution", ["normal", "logistic", "extreme"]),
                 "aft_loss_distribution_scale": trial.suggest_float("aft_loss_distribution_scale", 0.1, 10.0, log=True),
@@ -108,6 +111,7 @@ def main(cfg: DictConfig) -> None:
                 "subsample": trial.suggest_float("subsample", 0.5, 1.0),
                 "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0)
             }
+            params = {**base_params, **trial_params}
 
             cv_scores = []
 
@@ -184,7 +188,7 @@ def main(cfg: DictConfig) -> None:
                 c_index_fold = concordance_index_ipcw(
                     survival_train=ytrain,
                     survival_test=yvalid,
-                    estimate=-pred_valid_cv,
+                    estimate=-pred_valid_cv,  # negate predictions, note - change as needed
                     tau=tau
                 )[0]
                 cv_scores.append(c_index_fold)
@@ -213,31 +217,13 @@ def main(cfg: DictConfig) -> None:
         logging.info("Best trial number %d", study.best_trial.number)
         logging.info("Best parameters: %s", study.best_trial.params)
 
+        # Combine default parameters with best trial parameters
+        params = {**base_params, **study.best_trial.params}
+
     else:
 
-        dtrain = xgb.DMatrix(X.iloc[train_idx],
-                            label_lower_bound=y_lower_bound[train_idx],
-                            label_upper_bound=y_upper_bound[train_idx],
-                            enable_categorical=True)
-        ytrain = target.iloc[train_idx].set_index(cfg.target_feature).to_records()
-
-        dvalid = xgb.DMatrix(X.iloc[val_idx],
-                    label_lower_bound=y_lower_bound[val_idx],
-                    label_upper_bound=y_upper_bound[val_idx],
-                    enable_categorical=True)
-
-        dtest = xgb.DMatrix(X.iloc[test_idx],
-            label_lower_bound=y_lower_bound[test_idx],
-            label_upper_bound=y_upper_bound[test_idx],
-            enable_categorical=True)
-        ytest = target.iloc[test_idx].set_index(cfg.target_feature).to_records()
-
         # Set default parameters
-        params = {
-            'verbosity': 0,
-            'objective': 'survival:aft',
-            'eval_metric': 'aft-nloglik',
-            'tree_method': 'hist',
+        default_params = {
             'learning_rate': 0.05,
             'aft_loss_distribution': 'normal',
             'aft_loss_distribution_scale': 1.0,
@@ -245,52 +231,96 @@ def main(cfg: DictConfig) -> None:
             'lambda': 0.5,
             'alpha': 0.05
         }
+        params = {**base_params, **default_params}
 
-        # Train gradient boosted trees using AFT loss
-        current = time()
-        evals_result = {}
-        bst = xgb.train(params,
-                        dtrain,
-                        num_boost_round=10_000,
-                        evals=[(dtrain, 'train'), (dvalid, 'valid')],
-                        early_stopping_rounds=50,
-                        evals_result=evals_result)
+    # 9. Create DMatrix for training, validation and test sets
+    dtrain = xgb.DMatrix(X.iloc[train_idx],
+                        label_lower_bound=y_lower_bound[train_idx],
+                        label_upper_bound=y_upper_bound[train_idx],
+                        enable_categorical=True)
+    ytrain = target.iloc[train_idx].set_index(cfg.target_feature).to_records()
 
-        logging.info("Total model training time: %.2f seconds. \n", round(time() - current, 2))
+    dvalid = xgb.DMatrix(X.iloc[val_idx],
+                label_lower_bound=y_lower_bound[val_idx],
+                label_upper_bound=y_upper_bound[val_idx],
+                enable_categorical=True)
 
-        # Plot the training and validation losses
-        plot_losses(evals_result, HydraConfig.get().runtime.output_dir)
+    dtest = xgb.DMatrix(X.iloc[test_idx],
+        label_lower_bound=y_lower_bound[test_idx],
+        label_upper_bound=y_upper_bound[test_idx],
+        enable_categorical=True)
+    ytest = target.iloc[test_idx].set_index(cfg.target_feature).to_records()
 
-        # Estimated median survival time, we treat as risk score, where higher risk scores indicate higher risk of failure
-        pred_test = bst.predict(dtest)
-        pred_train = bst.predict(dtrain)
+    # 10. Train gradient boosted trees using AFT loss
+    logging.info("Training model...")
+    current = time()
+    evals_result = {}
+    bst = xgb.train(params,
+                    dtrain,
+                    num_boost_round=10_000,
+                    evals=[(dtrain, 'train'), (dvalid, 'valid')],
+                    early_stopping_rounds=50,
+                    evals_result=evals_result)
 
-        # Calculate IPCW Concordance Index
-        c_indices = {}
-        c_indices['train'] = concordance_index_ipcw(survival_train=ytrain, survival_test=ytrain,
-                                              estimate=-pred_train, tau=target.iloc[train_idx][cfg.time_identifier].max())[0]
-        c_indices['test'] = concordance_index_ipcw(survival_train=ytrain, survival_test=ytest,
-                                              estimate=-pred_test, tau=target.iloc[train_idx][cfg.time_identifier].max())[0]
+    logging.info("Total model training time: %.2f seconds. \n", round(time() - current, 2))
 
-        logging.info("Concordance Index (train): %.4f", c_indices['train'])
-        logging.info("Concordance Index (test): %.4f", c_indices['test'])
+    # 11. Plot the training and validation losses
+    plot_losses(evals_result, HydraConfig.get().runtime.output_dir)
+
+    # 12. Calculate predictions - median survival time
+    pred_test = bst.predict(dtest)
+    pred_train = bst.predict(dtrain)
+
+    # 13. Calculate IPCW Concordance Index
+    c_indices = {}
+    c_indices['train'] = concordance_index_ipcw(survival_train=ytrain,
+                                                survival_test=ytrain,
+                                                estimate=-pred_train,  # negate predictions, note - change as needed
+                                                tau=target.iloc[train_idx][cfg.time_identifier].max())[0]
+
+    c_indices['test'] = concordance_index_ipcw(survival_train=ytrain,
+                                               survival_test=ytest,
+                                               estimate=-pred_test,  # negate predictions, note - change as needed
+                                               tau=target.iloc[train_idx][cfg.time_identifier].max())[0]
+
+    logging.info("Concordance Index (train): %.4f", c_indices['train'])
+    logging.info("Concordance Index (test): %.4f", c_indices['test'])
 
 
-        # Plot survival curves
-        test_min = target.iloc[test_idx][cfg.time_identifier].min() + 1e-5 # avoid zero
-        test_max = target.iloc[test_idx][cfg.time_identifier].max()
-        time_grid = np.linspace(test_min, test_max, 100, endpoint=False)
-        surv_probs = survival_curves(time_grid=time_grid, predicted_medians=pred_test,
-                                     sigma=params['aft_loss_distribution_scale'],
-                                     distribution=params['aft_loss_distribution'])
+    # 14. Plot survival curves
+    test_min = target.iloc[test_idx][cfg.time_identifier].min() + 1e-5 # avoid zero
+    test_max = target.iloc[test_idx][cfg.time_identifier].max()
+    time_grid = np.linspace(test_min, test_max, 100, endpoint=False)
+    surv_probs = survival_curves(time_grid=time_grid, predicted_medians=pred_test,
+                                    sigma=params['aft_loss_distribution_scale'],
+                                    distribution=params['aft_loss_distribution'])
 
-        plot_survival_curves(surv_probs=surv_probs, time_grid=time_grid, target=target.iloc[test_idx],
-                             output_path=HydraConfig.get().runtime.output_dir)
+    plot_survival_curves(surv_probs=surv_probs, time_grid=time_grid, target=target.iloc[test_idx],
+                            output_path=HydraConfig.get().runtime.output_dir)
 
-        # Calculate integrated brier score
-        ibs = integrated_brier_score(ytrain, ytest, surv_probs, time_grid)
+    # 15. Calculate integrated brier score
+    ibs = integrated_brier_score(ytrain, ytest, surv_probs, time_grid)
 
-        logging.info("Integrated Brier Score: %.4f", ibs)
+    logging.info("Integrated Brier Score: %.4f", ibs)
+
+    # 16. Save performance metrics as JSON
+    metrics = {
+        'Concordance Index': c_indices,
+        'Integrated Brier Score': ibs
+    }
+    with open(os.path.join(HydraConfig.get().runtime.output_dir, 'metrics.json'), 'w', encoding='utf-8') as f:
+        json.dump(metrics, f)
+
+    # 17. [Optional] Save model & configuration
+    if cfg.save_model:
+        bst.save_model(os.path.join(HydraConfig.get().runtime.output_dir, "xgboost_model.json"))
+
+        with open(os.path.join(HydraConfig.get().runtime.output_dir, 'config.json'), 'w', encoding='utf-8') as f:
+            json.dump(OmegaConf.to_container(cfg, resolve=True), f)
+
+
+    logging.info("Total run time: %.2f seconds. \n", round(time() - start_time, 2))
+
 
 if __name__ == '__main__':
 

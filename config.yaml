@@ -13,3 +13,6 @@ sampling_n: 5
 # ML Model Training
 hyperoptimize: false
 n_trials: 30
+
+# Save model after training
+save_model: false
