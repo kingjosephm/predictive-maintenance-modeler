@@ -4,6 +4,7 @@ from time import time
 import warnings
 
 import pandas as pd
+from scipy.stats import entropy
 import numpy as np
 import scipy.stats as stats
 from sklearn.preprocessing import MinMaxScaler
@@ -65,14 +66,28 @@ class DataProcessor:
         assert df[self.target_feature].apply(is_bool_or_binary).all(), "Error! `self.target_feature` must be boolean or binary (0, 1)!"
         df[self.target_feature] = df[self.target_feature].astype(int)
 
-        # Drop any degenerate (invariant) features
-        degenerate_features = [i for i in df.columns if df[i].nunique() == 1]
+        # Reserve columns - we don't want to drop these
+        reserved_cols = [self.unit_identifier, self.time_identifier, self.target_feature]
+        assert set(reserved_cols).issubset(df.columns), "Error! `self.unit_identifier`, `self.time_identifier`, and `self.target_feature` must be in the dataframe!"
+
+        # Drop any degenerate (invariant or nearly invariant) features
+        degenerate_features = []
+        categorical_cols = [i for i in df.columns if df[i].dtype in ['object', 'category'] and i not in reserved_cols]
+        numeric_cols = [i for i in df.columns if df[i].dtype in [int, float, bool] and i not in reserved_cols]
+
+        entropies = df[categorical_cols].apply(self.column_entropy)
+        low_entropy_cols = entropies[entropies < 0.5]  # Adjust threshold as needed
+        degenerate_features.extend(low_entropy_cols.index.tolist())
+
+        cv = df[numeric_cols].std() / (df[numeric_cols].mean().replace(0, 1e-6))  # Avoid divide-by-zero
+        low_cv_cols = cv[cv < 0.01]  # Adjust threshold as needed
+        degenerate_features.extend(low_cv_cols.index.tolist())
+
         if degenerate_features:
             logging.info("Dropping degenerate features: %s", degenerate_features)
             df = df.drop(columns=degenerate_features)
 
         # Set categorical features
-        reserved_cols = [self.unit_identifier, self.time_identifier, self.target_feature]
         categorical_cols = [i for i in df.select_dtypes(include=['object', 'category']).columns if i not in reserved_cols]  # Select categorical columns
         df[categorical_cols] = df[categorical_cols].astype('category')
 
@@ -124,6 +139,19 @@ class DataProcessor:
         logging.info("Data preprocessing complete, took: %.2f seconds. \n", round(time() - current, 2))
 
         return df, train_idx, val_idx, test_idx
+
+    def column_entropy(self, series: pd.Series) -> float:
+        """Calculates the entropy of a given (categorical) column in the dataframe. Entropy is a measure of uncertainty or
+        unpredictability in the data. A higher entropy value indicates more disorder or randomness in the data. Features
+        with low entropy (<0.5) are considered degenerate
+
+        Args:
+            series (pd.Series): input series (column) to calculate entropy for
+        Returns:
+            float: entropy value of the series
+        """
+        counts = series.value_counts(normalize=True)
+        return entropy(counts, base=2)
 
     def drop_highly_correlated_numeric_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Drops highly correlated numeric features from `df` based on Pearson's correlation coefficient using a
