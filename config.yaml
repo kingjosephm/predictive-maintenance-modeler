@@ -15,4 +15,4 @@ hyperoptimize: false
 n_trials: 30
 
 # Save model after training
-save_model: false
+save_model: true

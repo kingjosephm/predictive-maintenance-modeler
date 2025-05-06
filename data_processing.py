@@ -41,7 +41,7 @@ class DataProcessor:
         self.lag_length = min(lag_length, 5) # maximum 5 lags, since higher number increases chance of overfitting
 
 
-    def preprocess(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Index, pd.Index, pd.Index]:
+    def preprocess(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Index, pd.Index, pd.Index, MinMaxScaler]:
         """
         Initial preprocessing of data including:
             1) dropping degenerate features if present
@@ -58,6 +58,7 @@ class DataProcessor:
             pd.Index - training set index positions
             pd.Index - val set index positions
             pd.Index - test set index positions
+            MinMaxScaler - scaler object for normalizing numeric features, which can be used to transform new data
         """
         current = time()
         logging.info("Preprocessing data..")
@@ -138,7 +139,7 @@ class DataProcessor:
 
         logging.info("Data preprocessing complete, took: %.2f seconds. \n", round(time() - current, 2))
 
-        return df, train_idx, val_idx, test_idx
+        return df, train_idx, val_idx, test_idx, scaler
 
     def column_entropy(self, series: pd.Series) -> float:
         """Calculates the entropy of a given (categorical) column in the dataframe. Entropy is a measure of uncertainty or

@@ -4,6 +4,7 @@ import logging
 from time import time
 
 import hydra
+import joblib
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 import matplotlib
@@ -58,7 +59,7 @@ def main(cfg: DictConfig) -> None:
     )
 
     # 4. Preprocess data
-    df, train_idx, val_idx, test_idx = dp.preprocess(df)
+    df, train_idx, val_idx, test_idx, scaler = dp.preprocess(df)
 
     # 5. Create labels for xgboost interval censoring
     assert cfg.sampling_n >= 1, "Sampling n must be greater than or equal to 1."
@@ -290,7 +291,7 @@ def main(cfg: DictConfig) -> None:
     # 14. Plot survival curves
     test_min = target.iloc[test_idx][cfg.time_identifier].min() + 1e-5 # avoid zero
     test_max = target.iloc[test_idx][cfg.time_identifier].max()
-    time_grid = np.linspace(test_min, test_max, 100, endpoint=False)
+    time_grid = np.linspace(test_min, test_max, 500, endpoint=False)
     surv_probs = survival_curves(time_grid=time_grid, predicted_medians=pred_test,
                                     sigma=params['aft_loss_distribution_scale'],
                                     distribution=params['aft_loss_distribution'])
@@ -313,11 +314,25 @@ def main(cfg: DictConfig) -> None:
 
     # 17. [Optional] Save model & configuration
     if cfg.save_model:
-        bst.save_model(os.path.join(HydraConfig.get().runtime.output_dir, "xgboost_model.json"))
 
-        with open(os.path.join(HydraConfig.get().runtime.output_dir, 'config.json'), 'w', encoding='utf-8') as f:
+        # Create the subdirectory for saving data and model artifacts
+        data_model_artifacts_dir = os.path.join(HydraConfig.get().runtime.output_dir, 'data_model_artifacts')
+        os.makedirs(data_model_artifacts_dir, exist_ok=True)
+
+        # Save the trained model
+        bst.save_model(os.path.join(data_model_artifacts_dir, "xgboost_model.json"))
+
+        # Save model & data configuration information
+        with open(os.path.join(data_model_artifacts_dir, 'config.json'), 'w', encoding='utf-8') as f:
             json.dump(OmegaConf.to_container(cfg, resolve=True), f)
 
+        # Save the MinMaxScaler object
+        _ = joblib.dump(scaler, os.path.join(data_model_artifacts_dir, 'minmax_scaler.joblib'))
+
+        # Save which features were used, since some might've been dropped
+        features_used = df.reset_index().columns.tolist()
+        with open(os.path.join(data_model_artifacts_dir, 'feature_list.json'), 'w', encoding='utf-8') as f:
+            json.dump(features_used, f)
 
     logging.info("Total run time: %.2f seconds. \n", round(time() - start_time, 2))
 
