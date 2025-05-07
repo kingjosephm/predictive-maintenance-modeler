@@ -5,6 +5,7 @@ from time import time
 
 import hydra
 import joblib
+import shutil
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 import matplotlib
@@ -333,6 +334,10 @@ def main(cfg: DictConfig) -> None:
         features_used = df.reset_index().columns.tolist()
         with open(os.path.join(data_model_artifacts_dir, 'feature_list.json'), 'w', encoding='utf-8') as f:
             json.dump(features_used, f)
+
+        # Zip the directory, removing unzipped directory
+        _ = shutil.make_archive(data_model_artifacts_dir, 'zip', data_model_artifacts_dir)
+        shutil.rmtree(data_model_artifacts_dir)
 
     logging.info("Total run time: %.2f seconds. \n", round(time() - start_time, 2))
 
