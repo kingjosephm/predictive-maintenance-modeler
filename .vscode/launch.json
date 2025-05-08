@@ -1,8 +1,8 @@
-{   
+{
     "version": "0.1.0",
     "configurations": [
       {
-        "name": "Train Debug",
+        "name": "Debug",
         "type": "debugpy",
         "request": "launch",
         "program": "${workspaceFolder}/main.py",
