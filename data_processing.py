@@ -2,7 +2,12 @@ from typing import Tuple
 import logging
 from time import time
 import warnings
+import zipfile
+import json
+import io
 
+import joblib
+from omegaconf import DictConfig, OmegaConf
 import pandas as pd
 from scipy.stats import entropy
 import numpy as np
@@ -21,38 +26,127 @@ pd.set_option('display.max_columns', 500)
 
 class DataProcessor:
 
-    def __init__(self,
-                 unit_identifier: str,
-                 time_identifier: str,
-                 target_feature: str,
-                 test_size: float = 0.1,
-                 seed: int = 42,
-                 lag_length: int = 2,
-                 sampling_n: int = 5
-                 ):
+    def __init__(self, cfg: DictConfig):
 
-        self.unit_identifier = unit_identifier
-        self.time_identifier = time_identifier
-        self.target_feature = target_feature
-        self.test_size = test_size
-        self.seed = seed
-        self.sampling_n = max(1, sampling_n)  # minimum 1, negative values not possible
-        assert lag_length < sampling_n, "Error! `lag_length` must be less than `sampling_n`!"
-        self.lag_length = min(lag_length, 5) # maximum 5 lags, since higher number increases chance of overfitting
+        # Apply for both training and prediction modes
+        self.data_path = cfg.data.data_path
+        self.unit_identifier = cfg.data.unit_identifier
+        self.time_identifier = cfg.data.time_identifier
+        self.target_feature = cfg.data.target_feature
+        self.sampling_n = max(1, cfg.data.sampling_n)  # minimum 1, negative values not possible
+        assert cfg.data.lag_length < cfg.data.sampling_n, "Error! `lag_length` must be less than `sampling_n`!"
+        self.lag_length = min(cfg.data.lag_length, 5) # maximum 5 lags, since higher number increases chance of overfitting
+        self.seed = cfg.seed
+
+        # Apply only for training mode
+        self.test_size = cfg.training_config.test_size
+
+        # Apply only for prediction mode
+        self.model_path = cfg.predict_config.model_path
+
+    def transform(self) -> pd.DataFrame:
+        """Transforms prediction dataset for model inference. This includes:
+            1) loading the model and data artifacts from the zip file
+            2) loading the data from the CSV file
+            3) restricting to features in the previously-trained model dataset
+            4) setting categorical features [if present]
+            5) downsampling panel data [optional]
+            6) adding feature lags [optional]
+            7) normalizing numeric features using previously fitted scaler
+
+        Returns:
+            pd.DataFrame: transformed test
+        """
+
+        current = time()
+        logging.info("Transforming data for prediction..")
+
+        # Obtain model and data artifacts from zip file
+        with zipfile.ZipFile(self.model_path, "r") as zipf:
 
 
-    def preprocess(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Index, pd.Index, pd.Index, MinMaxScaler]:
+            with zipf.open("minmax_scaler.joblib") as f:
+                scaler = joblib.load(f)
+
+            with zipf.open('feature_list.json') as f:
+                feature_list = json.load(f)
+
+            with zipf.open('config.yaml') as f:
+                yaml_bytes = f.read()
+                model_config = OmegaConf.load(io.StringIO(yaml_bytes.decode("utf-8")))
+
+        # Overwrite init params with loaded model config, in case they differ
+        # Note: self.data_path is presumed to be correct from init
+        self.unit_identifier = model_config.data.unit_identifier
+        self.time_identifier = model_config.data.time_identifier
+        self.target_feature = model_config.data.target_feature
+        self.sampling_n = model_config.data.sampling_n
+        self.lag_length = model_config.data.lag_length
+        self.seed = model_config.seed
+
+        df = pd.read_csv(self.data_path)  # Load data from CSV file
+
+        # Note: `self.target_feature`=True should mean the outcome is observed, =False is censored
+        assert df[self.target_feature].apply(is_bool_or_binary).all(), "Error! `self.target_feature` must be boolean or binary (0, 1)!"
+        df[self.target_feature] = df[self.target_feature].astype(int)
+
+
+        # Restrict to features in the previously-trained model
+        # Note: this assumes degenerate and highly correlated features have already been dropped
+        df = df[feature_list]
+
+        # Cast categorical features to 'category' dtype
+        reserved_cols = [self.unit_identifier, self.time_identifier, self.target_feature]
+        assert set(reserved_cols).issubset(df.columns), "Error! `self.unit_identifier`, `self.time_identifier`, and `self.target_feature` must be in the dataframe!"
+        categorical_cols = [i for i in df.columns if df[i].dtype in ['object', 'category'] and i not in reserved_cols]
+        df[categorical_cols] = df[categorical_cols].astype('category')
+
+        # Verify `self.df` is in fact a panel dataset
+        max_group_obs = df.groupby(self.unit_identifier)[self.time_identifier].count().max()
+        if max_group_obs == 1 & self.sampling_n > 1:
+            logging.warning("`self.df` does not appear to be a panel dataset, even though `self.sampling_n` > 1. Setting `self.sampling_n` to 1..")
+            self.sampling_n = 1
+            self.lag_length = 0  # no lags for cross-sectional data
+
+        # Sort data by unit and time, in case it's not already
+        df = df.sort_values([self.unit_identifier, self.time_identifier]).reset_index(drop=True)
+
+        # Downsample panel
+        if self.sampling_n > 1:
+            logging.info("Downsampling panel to min(%d, len(x)) observations per '%s'..", self.sampling_n, self.unit_identifier)
+            df = self.sample_group_observations(df)
+        else:  # keep last observation per unit
+            logging.info("Keeping only last observation per '%s'. This will not affect purely cross-sectional data.", self.unit_identifier)
+            df = df[df[self.time_identifier] == df.groupby(self.unit_identifier)[self.time_identifier].transform('max')]
+
+        df = df.set_index(self.unit_identifier)  # "hide" unit identifier for now
+
+        # Add feature lags [optional]
+        if self.lag_length > 0:
+            logging.info("Adding lags up to %d periods..", self.lag_length)
+            df = self.feature_lags(df)
+
+        df = df.reset_index()  # bring back unit identifier
+
+        # Normalization of numeric features using previously fitted scaler
+        cols = [i for i in df.columns if i not in reserved_cols+categorical_cols]
+        df.loc[:, cols] = scaler.transform(df.loc[:, cols])
+
+        logging.info("Data transformation complete, took: %.2f seconds. \n", round(time() - current, 2))
+
+        return df
+
+    def preprocess(self) -> Tuple[pd.DataFrame, pd.Index, pd.Index, pd.Index, MinMaxScaler]:
         """
         Initial preprocessing of data including:
-            1) dropping degenerate features if present
-            2) dropping highly correlated features if present
-            3) setting categorical features
-            4) downsampling panel data
-            5) adding feature lags
+            1) dropping degenerate features [if present]
+            2) dropping highly correlated features [if present]
+            3) setting categorical features [if present]
+            4) downsampling panel data [optional]
+            5) adding feature lags [optional]
             6) stratified group split for train, test, and validation sets
             7) normalizing numeric features
 
-        :param df: pd.DataFrame, input dataframe
         :return: Tuple of
             pd.DataFrame - processed dataframe, including training, val, and test observations
             pd.Index - training set index positions
@@ -63,13 +157,15 @@ class DataProcessor:
         current = time()
         logging.info("Preprocessing data..")
 
-        # Note: `self.target_feature`=True should mean the outcome is observed, =False is censored
-        assert df[self.target_feature].apply(is_bool_or_binary).all(), "Error! `self.target_feature` must be boolean or binary (0, 1)!"
-        df[self.target_feature] = df[self.target_feature].astype(int)
+        df = pd.read_csv(self.data_path)  # Load data from CSV file
 
         # Reserve columns - we don't want to drop these
         reserved_cols = [self.unit_identifier, self.time_identifier, self.target_feature]
         assert set(reserved_cols).issubset(df.columns), "Error! `self.unit_identifier`, `self.time_identifier`, and `self.target_feature` must be in the dataframe!"
+
+        # Note: `self.target_feature`=True should mean the outcome is observed, =False is censored
+        assert df[self.target_feature].apply(is_bool_or_binary).all(), "Error! `self.target_feature` must be boolean or binary (0, 1)!"
+        df[self.target_feature] = df[self.target_feature].astype(int)
 
         # Drop any degenerate (invariant or nearly invariant) features
         degenerate_features = []
@@ -89,7 +185,6 @@ class DataProcessor:
             df = df.drop(columns=degenerate_features)
 
         # Set categorical features
-        categorical_cols = [i for i in df.select_dtypes(include=['object', 'category']).columns if i not in reserved_cols]  # Select categorical columns
         df[categorical_cols] = df[categorical_cols].astype('category')
 
         # Drop highly correlated features
@@ -131,8 +226,7 @@ class DataProcessor:
 
         # Normalization of numeric features, not necessary but can help with convergence
         scaler = MinMaxScaler(clip=True)
-        reserved_cols = [self.unit_identifier, self.time_identifier, self.target_feature] + categorical_cols
-        cols = [i for i in df.columns if i not in reserved_cols]
+        cols = [i for i in df.columns if i not in reserved_cols+categorical_cols]
         df.loc[train_idx, cols] = scaler.fit_transform(df.loc[train_idx, cols])
         df.loc[test_idx, cols] = scaler.transform(df.loc[test_idx, cols])
         df.loc[val_idx, cols] = scaler.transform(df.loc[val_idx, cols])
