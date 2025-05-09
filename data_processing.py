@@ -33,7 +33,8 @@ class DataProcessor:
         self.unit_identifier = cfg.data.unit_identifier
         self.time_identifier = cfg.data.time_identifier
         self.target_feature = cfg.data.target_feature
-        self.sampling_n = max(1, cfg.data.sampling_n)  # minimum 1, negative values not possible
+        assert cfg.data.sampling_n >= 1, "Sampling n must be greater than or equal to 1."
+        self.sampling_n = cfg.data.sampling_n
         assert cfg.data.lag_length < cfg.data.sampling_n, "Error! `lag_length` must be less than `sampling_n`!"
         self.lag_length = min(cfg.data.lag_length, 5) # maximum 5 lags, since higher number increases chance of overfitting
         self.seed = cfg.seed
@@ -185,6 +186,7 @@ class DataProcessor:
             df = df.drop(columns=degenerate_features)
 
         # Set categorical features
+        categorical_cols = [i for i in df.columns if df[i].dtype in ['object', 'category'] and i not in reserved_cols]  # in case some dropped above
         df[categorical_cols] = df[categorical_cols].astype('category')
 
         # Drop highly correlated features
