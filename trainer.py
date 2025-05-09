@@ -55,8 +55,6 @@ class Trainer:
         14. Zip the directory containing the model and configuration files.
         15. Remove the unzipped directory.
         """
-        start_time = time()
-
         df, train_idx, val_idx, test_idx, scaler = self.dp.preprocess()
 
         # Create labels for xgboost interval censoring
@@ -200,5 +198,3 @@ class Trainer:
             # Zip the directory, removing unzipped directory
             _ = shutil.make_archive(data_model_artifacts_dir, 'zip', data_model_artifacts_dir)
             shutil.rmtree(data_model_artifacts_dir)
-
-        logging.info("Total run time: %.2f seconds. \n", round(time() - start_time, 2))

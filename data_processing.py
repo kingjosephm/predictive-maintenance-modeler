@@ -56,7 +56,7 @@ class DataProcessor:
             7) normalizing numeric features using previously fitted scaler
 
         Returns:
-            pd.DataFrame: transformed test
+            pd.DataFrame: transformed prediction dataset
         """
 
         current = time()
@@ -64,7 +64,6 @@ class DataProcessor:
 
         # Obtain model and data artifacts from zip file
         with zipfile.ZipFile(self.model_path, "r") as zipf:
-
 
             with zipf.open("minmax_scaler.joblib") as f:
                 scaler = joblib.load(f)

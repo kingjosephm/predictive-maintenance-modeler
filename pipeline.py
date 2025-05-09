@@ -1,6 +1,5 @@
 from omegaconf import DictConfig
 from data_processing import DataProcessor
-from model import SurvivalXGBModel
 from trainer import Trainer
 from predictor import Predictor
 
