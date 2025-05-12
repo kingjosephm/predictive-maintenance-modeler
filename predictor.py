@@ -4,6 +4,7 @@ import numpy as np
 import zipfile
 import tempfile
 from omegaconf import DictConfig
+from hydra.core.hydra_config import HydraConfig
 
 from data_processing import DataProcessor
 
@@ -21,7 +22,7 @@ class Predictor:
     def run(self) -> None:
         """_summary_
         """
-        df = self.dp.transform()
+        df, model_config = self.dp.transform()
 
         # Create labels for xgboost interval censoring
         if self.sampling_n == 1:  # simple cross-sectional data

@@ -45,7 +45,7 @@ class DataProcessor:
         # Apply only for prediction mode
         self.model_path = cfg.predict_config.model_path
 
-    def transform(self) -> pd.DataFrame:
+    def transform(self) -> Tuple[pd.DataFrame, DictConfig]:
         """Transforms prediction dataset for model inference. This includes:
             1) loading the model and data artifacts from the zip file
             2) loading the data from the CSV file
@@ -134,7 +134,7 @@ class DataProcessor:
 
         logging.info("Data transformation complete, took: %.2f seconds. \n", round(time() - current, 2))
 
-        return df
+        return df, model_config
 
     def preprocess(self) -> Tuple[pd.DataFrame, pd.Index, pd.Index, pd.Index, MinMaxScaler]:
         """

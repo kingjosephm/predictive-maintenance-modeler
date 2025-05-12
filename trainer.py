@@ -10,7 +10,6 @@ import pandas as pd
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from hydra.core.hydra_config import HydraConfig
-from sksurv.metrics import integrated_brier_score
 
 from data_processing import DataProcessor
 from hyperoptimizer import Hyperoptimizer
@@ -146,10 +145,9 @@ class Trainer:
             bst.save_model(os.path.join(data_model_artifacts_dir, "xgboost_model.json"))
 
             # Save model & data configuration information
-            OmegaConf.save(self.cfg, f=os.path.join(data_model_artifacts_dir, "config.yaml"), resolve=True)
-
-            with open(os.path.join(data_model_artifacts_dir, 'config.json'), 'w', encoding='utf-8') as f:
-                json.dump(OmegaConf.to_container(self.cfg, resolve=True), f)
+            cfg = OmegaConf.to_container(self.cfg, resolve=True)
+            cfg['training_config'].update(params)
+            OmegaConf.save(OmegaConf.create(cfg), f=os.path.join(data_model_artifacts_dir, "config.yaml"), resolve=True)
 
             # Save the MinMaxScaler object
             _ = joblib.dump(scaler, os.path.join(data_model_artifacts_dir, 'minmax_scaler.joblib'))
