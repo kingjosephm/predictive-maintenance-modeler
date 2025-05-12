@@ -10,11 +10,12 @@ import pandas as pd
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from hydra.core.hydra_config import HydraConfig
-from sksurv.metrics import concordance_index_ipcw, integrated_brier_score
+from sksurv.metrics import integrated_brier_score
 
 from data_processing import DataProcessor
 from hyperoptimizer import Hyperoptimizer
-from utils import set_seeds, plot_losses, survival_curves, plot_survival_curves
+from evaluator import Evaluator
+from utils import set_seeds
 
 class Trainer:
     def __init__(self,cfg: DictConfig, dp: DataProcessor):
@@ -98,7 +99,6 @@ class Trainer:
                             label_lower_bound=y_lower_bound[train_idx],
                             label_upper_bound=y_upper_bound[train_idx],
                             enable_categorical=True)
-        ytrain = target.iloc[train_idx].set_index(self.target_feature).to_records()
 
         dvalid = xgb.DMatrix(X.iloc[val_idx],
                     label_lower_bound=y_lower_bound[val_idx],
@@ -109,7 +109,6 @@ class Trainer:
             label_lower_bound=y_lower_bound[test_idx],
             label_upper_bound=y_upper_bound[test_idx],
             enable_categorical=True)
-        ytest = target.iloc[test_idx].set_index(self.target_feature).to_records()
 
         # Train gradient boosted trees using AFT loss
         logging.info("Training model...")
@@ -124,52 +123,17 @@ class Trainer:
 
         logging.info("Total model training time: %.2f seconds. \n", round(time() - current, 2))
 
-        # Plot the training and validation losses
-        plot_losses(evals_result, HydraConfig.get().runtime.output_dir)
+        # Calculate and save the evaluation results
+        evaluator = Evaluator(output_path=HydraConfig.get().runtime.output_dir,
+                              params=params,
+                              eval_results=evals_result,
+                              pred_train=bst.predict(dtrain),
+                              pred_test=bst.predict(dtest),
+                              ytrain=target.iloc[train_idx],
+                              ytest=target.iloc[test_idx],
+                              )
+        evaluator.run()
 
-        # Calculate predictions - median survival time
-        pred_test = bst.predict(dtest)
-        pred_train = bst.predict(dtrain)
-
-        # Calculate IPCW Concordance Index
-        c_indices = {}
-        c_indices['train'] = concordance_index_ipcw(survival_train=ytrain,
-                                                    survival_test=ytrain,
-                                                    estimate=-pred_train,  # negate predictions, note - change as needed
-                                                    tau=target.iloc[train_idx][self.time_identifier].max())[0]
-
-        c_indices['test'] = concordance_index_ipcw(survival_train=ytrain,
-                                                survival_test=ytest,
-                                                estimate=-pred_test,  # negate predictions, note - change as needed
-                                                tau=target.iloc[train_idx][self.time_identifier].max())[0]
-
-        logging.info("Concordance Index (train): %.4f", c_indices['train'])
-        logging.info("Concordance Index (test): %.4f", c_indices['test'])
-
-
-        # Plot survival curves
-        test_min = target.iloc[test_idx][self.time_identifier].min() + 1e-5 # avoid zero
-        test_max = target.iloc[test_idx][self.time_identifier].max()
-        time_grid = np.linspace(test_min, test_max, 500, endpoint=False)
-        surv_probs = survival_curves(time_grid=time_grid, predicted_medians=pred_test,
-                                        sigma=params['aft_loss_distribution_scale'],
-                                        distribution=params['aft_loss_distribution'])
-
-        plot_survival_curves(surv_probs=surv_probs, time_grid=time_grid, target=target.iloc[test_idx],
-                                output_path=HydraConfig.get().runtime.output_dir)
-
-        # Calculate integrated brier score
-        ibs = integrated_brier_score(ytrain, ytest, surv_probs, time_grid)
-
-        logging.info("Integrated Brier Score: %.4f", ibs)
-
-        # Save performance metrics as JSON
-        metrics = {
-            'Concordance Index': c_indices,
-            'Integrated Brier Score': ibs
-        }
-        with open(os.path.join(HydraConfig.get().runtime.output_dir, 'metrics.json'), 'w', encoding='utf-8') as f:
-            json.dump(metrics, f)
 
         # [Optional] Save model & configuration
         if self.save_model:
