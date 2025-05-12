@@ -123,7 +123,8 @@ class Trainer:
         logging.info("Total model training time: %.2f seconds. \n", round(time() - current, 2))
 
         # Calculate and save the evaluation results
-        evaluator = Evaluator(output_path=HydraConfig.get().runtime.output_dir,
+        evaluator = Evaluator(train_mode=True,
+                              output_path=HydraConfig.get().runtime.output_dir,
                               params=params,
                               eval_results=evals_result,
                               pred_train=bst.predict(dtrain),

@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 import json
 
 import pandas as pd
@@ -19,8 +19,8 @@ plt.rcParams['lines.linewidth'] = 1.5
 
 
 class Evaluator:
-    def __init__(self, output_path: str, params: Dict, eval_results: Dict, pred_train: np.ndarray,
-                 pred_test: np.ndarray, ytrain: pd.DataFrame, ytest: pd.DataFrame) -> None:
+    def __init__(self, train_mode: bool, output_path: str, params: Dict, eval_results: Dict, pred_train: np.ndarray, pred_test: np.ndarray, ytrain: pd.DataFrame, ytest: pd.DataFrame) -> None:
+        self.train_mode = train_mode
         self.output_path = output_path
         self.params = params
         self.eval_results = eval_results
@@ -29,8 +29,9 @@ class Evaluator:
         self.ytrain = ytrain
         self.ytest = ytest
 
-        # Convert to format required by concordance_index_ipcw
-        self.survival_train = self.ytrain.set_index(self.ytrain.columns[-1]).to_records()  # left-most column is time
+        # Convert to format required by concordance_index_ipcw and integrated_brier_score
+        if self.train_mode:
+            self.survival_train = self.ytrain.set_index(self.ytrain.columns[-1]).to_records()  # right-most column is target
         self.survival_test = self.ytest.set_index(self.ytest.columns[-1]).to_records()
 
         self.metrics = {}
@@ -41,13 +42,18 @@ class Evaluator:
     def run(self) -> None:
         """Runs the evaluation process, including plotting losses, calculating C-index, and plotting survival curves."""
 
-        self.plot_losses()
+        if self.train_mode:
+            self.plot_losses()
         self.calculate_cindex()
         time_grid, surv_probs = self.plot_survival_curves()
 
         # Calculate integrated brier score
-        self.metrics['Integrated Brier Score'] = integrated_brier_score(self.survival_train, self.survival_test,
-                                                                        surv_probs, time_grid)
+        if self.train_mode:
+            self.metrics['Integrated Brier Score'] = integrated_brier_score(self.survival_train, self.survival_test,
+                                                                            surv_probs, time_grid)
+        else:
+            self.metrics['Integrated Brier Score'] = integrated_brier_score(self.survival_test, self.survival_test,
+                                                                            surv_probs, time_grid)
 
         logging.info("Integrated Brier Score: %.4f", self.metrics['Integrated Brier Score'])
 
@@ -91,17 +97,25 @@ class Evaluator:
 
         self.metrics['Concordance Index'] = {}
 
-        self.metrics['Concordance Index']['train'] = concordance_index_ipcw(survival_train=self.survival_train,
-                                                                            survival_test=self.survival_train,
-                                                                            estimate=-self.pred_train,  # negate predictions, note - change as needed
-                                                                            tau=self.ytrain.iloc[:, 0].max())[0]
+        if self.train_mode:
+            self.metrics['Concordance Index']['train'] = concordance_index_ipcw(survival_train=self.survival_train,
+                                                                                survival_test=self.survival_train,
+                                                                                estimate=-self.pred_train,  # negate predictions, note - change as needed
+                                                                                tau=self.ytrain.iloc[:, 0].max())[0]
 
-        self.metrics['Concordance Index']['test'] = concordance_index_ipcw(survival_train=self.survival_train,
-                                                                           survival_test=self.survival_test,
-                                                                           estimate=-self.pred_test,  # negate predictions, note - change as needed
-                                                                           tau=self.ytest.iloc[:, 0].max())[0]
+            logging.info("Concordance Index (train): %.4f", self.metrics['Concordance Index']['train'])
 
-        logging.info("Concordance Index (train): %.4f", self.metrics['Concordance Index']['train'])
+            self.metrics['Concordance Index']['test'] = concordance_index_ipcw(survival_train=self.survival_train,
+                                                                               survival_test=self.survival_test,
+                                                                               estimate=-self.pred_test,  # negate predictions, note - change as needed
+                                                                               tau=self.ytest.iloc[:, 0].max())[0]
+        else:
+            self.metrics['Concordance Index']['test'] = concordance_index_ipcw(survival_train=self.survival_test,
+                                                                               survival_test=self.survival_test,
+                                                                               estimate=-self.pred_test,  # negate predictions, note - change as needed
+                                                                               tau=self.ytest.iloc[:, 0].max())[0]
+
+
         logging.info("Concordance Index (test): %.4f", self.metrics['Concordance Index']['test'])
 
 

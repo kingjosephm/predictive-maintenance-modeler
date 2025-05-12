@@ -1,12 +1,15 @@
+import os
+import zipfile
+import tempfile
+
 import xgboost as xgb
 import pandas as pd
 import numpy as np
-import zipfile
-import tempfile
 from omegaconf import DictConfig
 from hydra.core.hydra_config import HydraConfig
 
 from data_processing import DataProcessor
+from evaluator import Evaluator
 
 class Predictor:
     def __init__(self, cfg: DictConfig, dp: DataProcessor):
@@ -46,7 +49,6 @@ class Predictor:
                             label_lower_bound=y_lower_bound,
                             label_upper_bound=y_upper_bound,
                             enable_categorical=True)
-        ypred = target.set_index(self.target_feature).to_records()
 
         # Load the model
         with zipfile.ZipFile(self.model_path, "r") as zipf:
@@ -58,3 +60,19 @@ class Predictor:
                     bst.load_model(tmp.name)
 
         predictions = bst.predict(dpred)
+
+        # Calculate and save the evaluation results
+        evaluator = Evaluator(train_mode=False,
+                              output_path=HydraConfig.get().runtime.output_dir,
+                              params=model_config['training_config'],
+                              eval_results={},
+                              pred_train=np.ndarray,
+                              pred_test=predictions,
+                              ytrain=pd.DataFrame(),
+                              ytest=target,
+                              )
+        evaluator.run()
+
+        # Output the predictions
+        output_path = HydraConfig.get().runtime.output_dir
+        os.makedirs(output_path, exist_ok=True)
