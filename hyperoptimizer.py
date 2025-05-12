@@ -9,7 +9,7 @@ from sksurv.metrics import concordance_index_ipcw
 from sklearn.model_selection import StratifiedKFold
 
 
-class HyperOptimizer():
+class Hyperoptimizer():
 
     def __init__(self, cfg, base_params, train_idx, y_upper_bound, y_lower_bound, X, target):
         self.time_identifier = cfg.data.time_identifier
@@ -24,7 +24,7 @@ class HyperOptimizer():
         self.seed = cfg.seed
 
 
-    def run(self) -> Dict:
+    def hyperoptimize(self) -> Dict:
         """Runs the hyperparameter optimization process using Optuna.
         The function creates a study and optimizes the objective function defined in the class. The best parameters
         are returned as a dictionary. The optimization is performed using the TPE sampler, and the number of trials

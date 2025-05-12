@@ -13,7 +13,7 @@ from hydra.core.hydra_config import HydraConfig
 from sksurv.metrics import concordance_index_ipcw, integrated_brier_score
 
 from data_processing import DataProcessor
-from hyperoptimizer import HyperOptimizer
+from hyperoptimizer import Hyperoptimizer
 from utils import set_seeds, plot_losses, survival_curves, plot_survival_curves
 
 class Trainer:
@@ -77,8 +77,8 @@ class Trainer:
 
         if self.hyperoptimize:
 
-            hyperopt = HyperOptimizer(self.cfg, self.base_params, train_idx, y_upper_bound, y_lower_bound, X, target)
-            params = hyperopt.run()
+            hyperopt = Hyperoptimizer(self.cfg, self.base_params, train_idx, y_upper_bound, y_lower_bound, X, target)
+            params = hyperopt.hyperoptimize()
 
         else:
 
