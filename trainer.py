@@ -36,7 +36,7 @@ class Trainer:
         # Set random seed for reproducibility
         set_seeds(self.seed)
 
-    def train(self) -> None:
+    def run(self) -> None:
         """Trains the survival model using XGBoost with AFT loss function.
 
         The function performs the following steps:
@@ -79,7 +79,7 @@ class Trainer:
         if self.hyperoptimize:
 
             hyperopt = Hyperoptimizer(self.cfg, self.base_params, train_idx, y_upper_bound, y_lower_bound, X, target)
-            params = hyperopt.hyperoptimize()
+            params = hyperopt.run()
 
         else:
 

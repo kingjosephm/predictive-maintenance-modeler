@@ -18,7 +18,7 @@ class Predictor:
         self.model_path = cfg.predict_config.model_path
         self.seed = cfg.seed
 
-    def predict(self) -> None:
+    def run(self) -> None:
         """_summary_
         """
         df = self.dp.transform()

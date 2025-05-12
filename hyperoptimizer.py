@@ -24,7 +24,7 @@ class Hyperoptimizer():
         self.seed = cfg.seed
 
 
-    def hyperoptimize(self) -> Dict:
+    def run(self) -> Dict:
         """Runs the hyperparameter optimization process using Optuna.
         The function creates a study and optimizes the objective function defined in the class. The best parameters
         are returned as a dictionary. The optimization is performed using the TPE sampler, and the number of trials

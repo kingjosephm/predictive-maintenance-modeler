@@ -12,8 +12,8 @@ class Pipeline:
 
     def run(self):
         if self.cfg.mode == 'train':
-            self.trainer.train()
+            self.trainer.run()
         elif self.cfg.mode == 'predict':
-            self.predictor.predict()
+            self.predictor.run()
         else:
             raise ValueError(f"Unknown mode {self.cfg.mode}")
