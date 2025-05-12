@@ -23,7 +23,12 @@ class Predictor:
         self.seed = cfg.seed
 
     def run(self) -> None:
-        """_summary_
+        """Predicts survival times using a pre-trained XGBoost model with AFT loss function.
+
+        Additional functionality:
+        1. Generate predictions for prediction dataset using pretrained model
+        2. Calculates and saves evaluation results
+        3. Outputs predictions to a gzipped CSV file
         """
         df, model_config = self.dp.transform()
 
@@ -76,3 +81,5 @@ class Predictor:
         # Output the predictions
         output_path = HydraConfig.get().runtime.output_dir
         os.makedirs(output_path, exist_ok=True)
+
+        pd.DataFrame(predictions, columns=['prediction'], index=target.index).to_csv(os.path.join(output_path, 'predictions.cs.gz'), compression='infer')
