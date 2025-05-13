@@ -10,6 +10,9 @@ Data for this example are publicly-available multivariate time-series data from 
 - using groupby forward-fill for missing values
 - to backward fill missing values, I use [MICE imputation](https://medium.com/@kunalshrm175/multivariate-imputation-by-chained-equations-mice-2d3efb063434) using [Bayesian ridge regression](https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.BayesianRidge.html).
 
-This preprocessed dataset can be downloaded [here](https://drive.google.com/file/d/1XaOm36m-Jj5v3HsOybmAUdGsTZ0_kt3d/view?usp=sharing).
+This preprocessed dataset can be downloaded here:
+
+- [Training data](https://drive.google.com/file/d/1LT_95MKmR57WAtpoC9VDZrmH_1kL6A1a/view?usp=sharing)
+- [Test data](https://drive.google.com/file/d/1IchHJmjbKQDkpLVGWfpx-PIoHr3NhUGu/view?usp=sharing)
 
 Exploratory data analysis of the preprocessed dataset is done in [this notebook](exploratory_data_analysis.ipynb).
