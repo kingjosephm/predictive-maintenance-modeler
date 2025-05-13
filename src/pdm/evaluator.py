@@ -147,7 +147,10 @@ class Evaluator:
         plt.plot(time_grid, np.mean(surv_probs, axis=0), label='Forecasted', linestyle='--')
         plt.xlabel('Time')
         plt.ylabel('Probability of Survival')
-        plt.title('Forecasted & Observed Survival using Holdout Set')
+        if self.train_mode:
+            plt.title('Forecasted & Observed Survival using Holdout Set')
+        else:
+            plt.title('Forecasted & Observed Survival')
         plt.legend()
         plt.savefig(os.path.join(self.output_path, 'survival_curves.png'), dpi=200)
         plt.close()
