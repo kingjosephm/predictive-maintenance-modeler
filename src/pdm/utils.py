@@ -1,7 +1,6 @@
 import random
 import os
 from typing import Any
-import pandas as pd
 import numpy as np
 
 def set_seeds(seed: int = 42) -> None:

@@ -8,8 +8,8 @@ import numpy as np
 from omegaconf import DictConfig
 from hydra.core.hydra_config import HydraConfig
 
-from data_processing import DataProcessor
-from evaluator import Evaluator
+from pdm.data_processing import DataProcessor
+from pdm.evaluator import Evaluator
 
 class Predictor:
     def __init__(self, cfg: DictConfig, dp: DataProcessor):

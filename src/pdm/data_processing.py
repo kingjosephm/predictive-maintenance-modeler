@@ -15,7 +15,7 @@ import scipy.stats as stats
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
 
-from utils import set_seeds, is_bool_or_binary
+from pdm.utils import set_seeds, is_bool_or_binary
 set_seeds(42)
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)

@@ -1,7 +1,8 @@
 from omegaconf import DictConfig
-from data_processing import DataProcessor
-from trainer import Trainer
-from predictor import Predictor
+
+from pdm.data_processing import DataProcessor
+from pdm.trainer import Trainer
+from pdm.predictor import Predictor
 
 class Pipeline:
     def __init__(self, cfg: DictConfig):

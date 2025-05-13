@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple
 import json
 
 import pandas as pd

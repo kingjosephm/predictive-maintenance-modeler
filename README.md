@@ -66,8 +66,8 @@ This hasn't been tested on Windows, so you may need to experiment a bit.
 
 ## Running the Code
 
-### config.yaml
-Prior to running the code you must configure the training and data build file, which is done in [config.yaml](config.yaml). Currently, this is populated with the default values for the Scania dataset (explained below).
+### Configuration
+Prior to running the code you must configure the training and data build file, which is done in [`./configs/config.yaml`](config.yaml). Currently, this is populated with the default values for the Scania dataset (explained below).
 
 This config file contains the following arguments:
 
@@ -92,10 +92,14 @@ This config file contains the following arguments:
 
 - `seed`: initializer value for pseudo random number generator
 
+Note - don't alter the Hydra configuration information, this alters the default destination for outputting logs and artifacts.
+
 ### Executing code in the terminal
 
+**Ensure the current working directory of your IDE is set at `./src`**
+
 ```
-python main.py
+python -m pdm
 ```
 
 Logging is streamed to the console during the train/predict procedure. At the end, a log file, figures, and model artifacts are output to a new folder with the datetime when training is initiated: `./output/<YYYY-MM-DD>/<HH-mm-SS>`.

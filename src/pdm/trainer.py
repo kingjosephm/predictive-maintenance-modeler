@@ -11,10 +11,10 @@ import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from hydra.core.hydra_config import HydraConfig
 
-from data_processing import DataProcessor
-from hyperoptimizer import Hyperoptimizer
-from evaluator import Evaluator
-from utils import set_seeds
+from pdm.data_processing import DataProcessor
+from pdm.hyperoptimizer import Hyperoptimizer
+from pdm.evaluator import Evaluator
+from pdm.utils import set_seeds
 
 class Trainer:
     def __init__(self,cfg: DictConfig, dp: DataProcessor):
