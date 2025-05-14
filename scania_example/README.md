@@ -16,3 +16,5 @@ This preprocessed dataset can be downloaded here:
 - [Test data](https://drive.google.com/file/d/1IchHJmjbKQDkpLVGWfpx-PIoHr3NhUGu/view?usp=sharing)
 
 Exploratory data analysis of the preprocessed dataset is done in [this notebook](exploratory_data_analysis.ipynb).
+
+[This notebook](train_predict_examples.ipynb) provides a walkthrough of train and predict functionality
