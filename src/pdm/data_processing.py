@@ -5,6 +5,7 @@ import warnings
 import zipfile
 import json
 import io
+import re
 
 import joblib
 from omegaconf import DictConfig, OmegaConf
@@ -93,7 +94,18 @@ class DataProcessor:
 
         # Restrict to features in the previously-trained model
         # Note: this assumes degenerate and highly correlated features have already been dropped
-        df = df[feature_list]
+        # Also removes any feature lags that were constructed as part of preprocessing
+        base_features = set()
+        non_lagged_columns = []
+        for col in feature_list:
+            match = re.fullmatch(r'(\d+_\d+)_l\d+', col)
+            if match:
+                base_features.add(match.group(1))
+            else:
+                non_lagged_columns.append(col)
+        non_lagged_columns.extend(sorted(base_features - set(non_lagged_columns)))
+
+        df = df[non_lagged_columns]
 
         # Cast categorical features to 'category' dtype
         reserved_cols = [self.unit_identifier, self.time_identifier, self.target_feature]
